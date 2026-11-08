@@ -977,6 +977,11 @@ class Editor(QMainWindow):
             if not state['plan']:
                 QMessageBox.information(dlg,'Prepare Edit','Describe the edit first, then click Prepare Edit.')
                 return
+            # Reinterpret the exact request before execution so numeric constraints
+            # cannot be lost to a conversational model or a refreshed session.
+            source_request=state.get('plan_text') or self._assistant_request
+            if source_request:
+                state['plan']=interpret_request(source_request)
             self._assistant_pending_plan=state['plan']
             self._assistant_pending_tasks=list(state['requests'])
             # Keep the assistant window open while the preview is created.
@@ -1330,6 +1335,8 @@ class Editor(QMainWindow):
             heartbeat.stop();cancel_button.setEnabled(False)
             analysis_bar.setRange(0,100)
             state['cuts']=cuts
+            if target_duration.value()>0 and mode.currentIndex()==0:
+                mode.setCurrentIndex(1)
             if mode.currentIndex()==0:
                 windows=choose_highlights(cuts,start,end,3,5.)
             elif mode.currentIndex()==2:
@@ -1386,6 +1393,19 @@ class Editor(QMainWindow):
                     windows=[(a,b) for a,b,_ in segments]
                 else:
                     windows=choose_highlights(cuts,start,end,int(count.currentText()),length.value())
+            # Reject an inconsistent plan before enabling Apply Edit.
+            requested_seconds=float(target_duration.value())
+            candidate_seconds=runtime(state['segments'])+runtime(state['intro']) if state['segments'] else sum(b-a for a,b in windows)
+            if requested_seconds and abs(candidate_seconds-requested_seconds)>max(.15,min(1.,requested_seconds*.005)):
+                state['windows']=[]
+                results.clear()
+                status.setText(f'Cannot create the requested {requested_seconds:g}s edit: available montage is {candidate_seconds:.2f}s. Adjust settings or choose more footage.')
+                work_message.setText('Requested duration not met. No edit will be applied.')
+                analysis_bar.setValue(100)
+                editor_tabs.setCurrentWidget(scroll)
+                analyze.setEnabled(True);apply.setEnabled(False)
+                release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
+                return
             state['windows']=windows;results.clear()
             planned=[('intro',a,b,s) for a,b,s in state['intro']]
             planned += [('main',a,b,state['segments'][i][2] if state['segments'] else 1.) for i,(a,b) in enumerate(windows)]
@@ -1534,6 +1554,14 @@ class Editor(QMainWindow):
         def apply_edit():
             windows=state['windows']
             if not windows:return
+            # Never replace the timeline unless the analyzed montage meets the
+            # user's explicit duration. This check precedes any mutation.
+            requested=float(target_duration.value())
+            estimated=runtime(state['segments'])+runtime(state['intro']) if state['segments'] else sum(b-a for a,b in windows)
+            if requested and abs(estimated-requested)>max(.15,min(1.,requested*.005)):
+                QMessageBox.warning(dlg,'Duration mismatch',f'Planned edit is {estimated:.2f}s, not the requested {requested:g}s. Re-analyze before applying.')
+                apply.setEnabled(False)
+                return
             if pending and pending.get('focus_kills') and not combat_markers.text().strip() and not combat_windows((state['vision'] or {}).get('samples',[]),full_end) and not allow_unverified.isChecked():
                 QMessageBox.warning(dlg,'Combat review required',
                     'No confirmed or AI-estimated combat moments were found.\n\n'
@@ -1559,7 +1587,7 @@ class Editor(QMainWindow):
             previous_clips=copy.deepcopy(self.clips)
             if replace.isChecked():
                 confirmation=QMessageBox.question(dlg,'Replace Timeline',
-                    'Replace the current timeline with the proposed Director edit?\n'
+                    'Replace the current timeline with the proposed Eli edit?\n'
                     'Save your project first. You can also Undo this operation.')
                 if confirmation!=QMessageBox.Yes:return
                 self.clips=[]
@@ -1586,7 +1614,7 @@ class Editor(QMainWindow):
                 # Manual timeline clips retain their user-selected levels.
                 if clip.get('audio'):
                     clip['volume']=.42
-                clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Director edit — AI candidate, not verified kill')
+                clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Eli edit — AI candidate, not verified kill')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
                 # Eli Audio Intelligence: cuts and merges are NEVER sound events.

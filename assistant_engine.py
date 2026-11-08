@@ -18,7 +18,7 @@ def interpret_request(text):
         target_seconds = float(target.group(1).replace(',', '.')) * (60 if target.group(2).startswith('min') else 1)
         target_seconds = min(10800., max(1., target_seconds))
     speed_match = re.search(r'\b(?:sped\s*up|speed(?:\s*up)?|playback)(?:\s*(?:to|at|by))?\s*(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)?', t) or re.search(r'\b(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)', t)
-    requested_speed = max(.25,min(8.,float(speed_match.group(1).replace(',','.')))) if speed_match else 2.
+    requested_speed = max(.25,min(8.,float(speed_match.group(1).replace(',','.')))) if speed_match else 1.
     highlight = bool(re.search(r'\b(highlights?|montage|shorts?|reels?|tiktok|clips?)\b',t))
     focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|multikills?)\b',t))
     focus_loot = bool(re.search(r'\b(loot|looting|inventory|supplies|containers?)\b',t))

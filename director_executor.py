@@ -132,4 +132,8 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
         if take>.03:
             selected.append((a,a+take,speed));remaining-=take/speed
     selected.sort(key=lambda x:x[0])
+    # Duration is measured in output seconds after speed adjustment.
+    # Prevent overlapping selected source intervals from double-counting footage.
+    if abs(runtime(selected)-budget)>max(.15,min(1.,budget*.005)):
+        return [],[]
     return [],selected
