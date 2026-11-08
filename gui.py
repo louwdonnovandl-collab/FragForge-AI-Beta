@@ -965,6 +965,22 @@ class Editor(QMainWindow):
             path,_=QFileDialog.getOpenFileName(dlg,'Choose background music',str(Path.home()),'Audio (*.mp3 *.wav *.flac *.m4a *.ogg *.aac)')
             if path:music_path.setText(path)
         music_button.clicked.connect(lambda checked=False:choose_music())
+        # User-supplied, locally stored music; no unlicensed tracks bundled.
+        library_button=self.button('Choose music library folder…',lambda:None)
+        settings_layout.addWidget(library_button)
+        music_library_status=QLabel('Music library: no folder selected (up to 50 local tracks)')
+        settings_layout.addWidget(music_library_status)
+        music_library_tracks=[]
+        def choose_music_library():
+            folder=QFileDialog.getExistingDirectory(dlg,'Choose licensed music folder',str(Path.home()))
+            if not folder:return
+            extensions={'.mp3','.wav','.flac','.m4a','.ogg','.aac'}
+            tracks=sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in extensions),key=lambda p:p.name.lower())[:50]
+            music_library_tracks.clear();music_library_tracks.extend(tracks)
+            music_library_status.setText(f'Music library: {len(tracks)} tracks found (maximum 50)')
+            if tracks and not music_path.text().strip():music_path.setText(str(tracks[0]))
+        library_button.clicked.connect(lambda checked=False:choose_music_library())
+
         settings_layout=collapsible_section('03  Combat detection & review', True)
         settings_layout.addWidget(QLabel('Confirmed combat moments (source timestamps, comma-separated)'))
         combat_markers=QLineEdit()
@@ -1351,13 +1367,35 @@ class Editor(QMainWindow):
             failures=[]
             if not timeline or actual_v1<=0:
                 failures.append('No video clips were placed on V1')
-            if requested and abs(actual_v1-requested)>tolerance:
-                failures.append(f'V1 video is {actual_v1:.2f}s, requested {requested:.2f}s')
-            if requested and abs(actual_total-requested)>tolerance:
-                failures.append(f'Full timeline is {actual_total:.2f}s, requested {requested:.2f}s')
+            # A shorter valid montage is a creative choice, not a corrupt timeline.
+            # Ask the editor before committing it; re-edit restores the old timeline.
+            shorter=bool(requested and actual_v1>0 and actual_v1<requested-tolerance)
+            if requested and actual_v1>requested+tolerance:
+                failures.append(f'V1 video exceeds target: {actual_v1:.2f}s > {requested:.2f}s')
+            if requested and actual_total>requested+tolerance:
+                failures.append(f'Full timeline exceeds target: {actual_total:.2f}s > {requested:.2f}s')
+
             if pending and pending.get('music') and not any(
                     c.get('label','').startswith('Director background music') for c in self.clips):
                 failures.append('Requested background music was not added')
+            if not failures and shorter:
+                choice=QMessageBox(dlg)
+                choice.setWindowTitle('Mr Director — Review shorter edit')
+                choice.setIcon(QMessageBox.Question)
+                choice.setText(f'I created a shorter {actual_v1:.1f}-second version. You requested {requested:.1f} seconds.')
+                choice.setInformativeText('Would you like to keep this version, or should I re-edit?')
+                keep_button=choice.addButton('Keep shorter edit',QMessageBox.AcceptRole)
+                redo_button=choice.addButton('Re-edit',QMessageBox.ActionRole)
+                choice.addButton('Cancel',QMessageBox.RejectRole)
+                choice.exec()
+                if choice.clickedButton()!=keep_button:
+                    self.clips=previous_clips
+                    self.selected=None
+                    self.update_all()
+                    if choice.clickedButton()==redo_button:
+                        QMessageBox.information(dlg,'Re-edit requested',
+                            'Your original timeline is restored. Adjust the duration, playback speed, or selected moments, then click Analyze video again.')
+                    return
             if failures:
                 self.clips=previous_clips
                 self.selected=None
