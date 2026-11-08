@@ -10,9 +10,11 @@ def interpret_request(text):
     intro = re.search(r'(?:intro|opening)[^\n.]{0,65}?(\d{1,2})\s*(?:seconds?|secs?|s\b)', t)
     intro_alt = re.search(r'(\d{1,2})\s*(?:seconds?|secs?|s\b)[^\n.]{0,40}?(?:intro|opening)', t)
     intro_seconds = min(20, int((intro or intro_alt).group(1))) if (intro or intro_alt) else (10 if re.search(r'\b(intro|opening)\b', t) else 0)
-    target = re.search(r'\b(\d{1,3}(?:[.,]\d+)?)\s*(seconds?|secs?|minutes?|mins?|min\b)\s*(?:short|video|clip|montage|edit|reel)\b', t)
+    target = re.search(r'\b(\d{1,3}(?:[.,]\d+)?)\s*[- ]?\s*(seconds?|secs?|minutes?|mins?|min\b)\s*[- ]?\s*(?:short|video|clip|montage|edit|reel)\b', t)
     if not target:
         target = re.search(r'\b(?:make|create|build|cut|trim|reduce|shorten|edit|down|to|into)\b[^\n.]{0,80}?\b(\d{1,3}(?:[.,]\d+)?)\s*(seconds?|secs?|minutes?|mins?|min\b)\b', t)
+    if not target:
+        target = re.search(r'\b(\d{1,3}(?:[.,]\d+)?)\s*[- ]?\s*(seconds?|secs?|minutes?|mins?)\b(?=\s|[-.,;!?]|$)', t)
     target_seconds = 0.
     if target:
         target_seconds = float(target.group(1).replace(',', '.')) * (60 if target.group(2).startswith('min') else 1)

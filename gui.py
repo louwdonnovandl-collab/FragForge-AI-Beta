@@ -979,7 +979,7 @@ class Editor(QMainWindow):
                 return
             # Reinterpret the exact request before execution so numeric constraints
             # cannot be lost to a conversational model or a refreshed session.
-            source_request=state.get('plan_text') or self._assistant_request
+            source_request=value if value and re.search(edit_words,value,re.I) else (state.get('plan_text') or self._assistant_request)
             if source_request:
                 state['plan']=interpret_request(source_request)
             self._assistant_pending_plan=state['plan']
@@ -1290,7 +1290,7 @@ class Editor(QMainWindow):
                     ('READY: ' if t['supported'] else 'NOT IMPLEMENTED: ')+t['label'] for t in tasks))
                 settings_layout.addWidget(report)
             mode.setCurrentIndex(1 if 0 < float(pending.get('target_seconds',0)) <= 300 else (2 if pending['mode']=='longform' else 1))
-            target_duration.setValue(float(pending.get('target_seconds',pending.get('target_minutes',0)*60)))
+            target_duration.setValue(float(pending.get('target_seconds') or (pending.get('target_minutes',0)*60)))
             playback_speed.setValue(float(pending.get('requested_speed') or 1.0))
             if pending.get('music'):
                 music_request.setText(str(pending.get('original','')))
@@ -1301,6 +1301,8 @@ class Editor(QMainWindow):
             sounds.setChecked(False)  # Automatic cues require verified event recognition
             replace.setChecked(True)  # Requested edit selected; timeline replacement still asks approval
             preset_changed(mode.currentIndex())
+            if target_duration.value()>0:
+                work_stage.setText(f'Requested final duration: {target_duration.value():g} seconds')
         results=QListWidget();results.setMinimumHeight(115);settings_layout.addWidget(results)
         controls=QHBoxLayout();layout.addLayout(controls)
         analyze=self.button('Analyze video',lambda:None,True)
@@ -1335,11 +1337,9 @@ class Editor(QMainWindow):
             heartbeat.stop();cancel_button.setEnabled(False)
             analysis_bar.setRange(0,100)
             state['cuts']=cuts
-            if target_duration.value()>0 and mode.currentIndex()==0:
-                mode.setCurrentIndex(1)
-            if mode.currentIndex()==0:
+            if mode.currentIndex()==0 and target_duration.value()<=0:
                 windows=choose_highlights(cuts,start,end,3,5.)
-            elif mode.currentIndex()==2:
+            elif mode.currentIndex()==2 and target_duration.value()<=0:
                 stagnant=cuts['stagnant'];quiet=cuts['quiet'] if speedup.isChecked() else []
                 segments=smart_pacing_segments(0.,full_end,stagnant,quiet)
                 if not segments:segments=[(0.,full_end,1.)]
@@ -1352,7 +1352,8 @@ class Editor(QMainWindow):
                 windows=[(a,b) for a,b,_ in segments]
             else:
                 if target_duration.value()>0:
-                    # Short-form: explicit target and speed override fixed clip-count presets.
+                    # Explicit duration ALWAYS selects a bounded montage, regardless
+                    # of a stale long-form preset or an LLM-suggested mode.
                     stagnant=cuts.get('stagnant',[])
                     quiet=cuts.get('quiet',[])
                     base=smart_pacing_segments(0.,full_end,stagnant,[])
@@ -1399,7 +1400,7 @@ class Editor(QMainWindow):
             if requested_seconds and abs(candidate_seconds-requested_seconds)>max(.15,min(1.,requested_seconds*.005)):
                 state['windows']=[]
                 results.clear()
-                status.setText(f'Cannot create the requested {requested_seconds:g}s edit: available montage is {candidate_seconds:.2f}s. Adjust settings or choose more footage.')
+                status.setText(f'Cannot create the requested {requested_seconds:g}s edit: available montage is {candidate_seconds:.2f}s. Apply is disabled. Try more footage or a shorter target.')
                 work_message.setText('Requested duration not met. No edit will be applied.')
                 analysis_bar.setValue(100)
                 editor_tabs.setCurrentWidget(scroll)
@@ -1508,6 +1509,10 @@ class Editor(QMainWindow):
                     status.setText('Vision scan complete, but no credible combat candidates found. To create a general highlight montage, check Allow unverified footage and click Analyze video again; or enter known combat timestamps.')
                 elif hits:
                     status.setText(status.text()+f' AI flagged {len(hits)} candidate combat frames; audio transients: {len(result.get("audio",{}).get("events",[]))}. Review before export.')
+                # Keep completion visible, including cases where Apply is blocked.
+                analysis_bar.setValue(100)
+                editor_tabs.setCurrentWidget(scroll)
+                work_message.setText('Analysis finished. Review Edit Details for the result.')
             worker.ready.connect(done)
             worker.failed.connect(failed)
             activity.update(last_update=time.monotonic(),stage='Vision scan running')
