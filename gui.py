@@ -15,6 +15,7 @@ from vision_director import installed_models, scan as vision_scan, combat_window
 from audio_director import scan_audio, corroborate_vision
 from recognition_markers import build_markers, director_report, export_report
 from music_intelligence import scan_library, choose_track, genre_for_request
+from ai_runtime import PROFILES, acquire as acquire_ai_job, release as release_ai_job, busy as ai_job_busy
 from auto_editor import find_scene_changes, choose_highlights, full_length_segments, detect_stagnant_ranges, keep_ranges_after_removal, analyze_motion_profile, smart_pacing_segments
 
 BG='#0b1019'; PANEL='#142131'; CARD='#1c2c3e'; FG='#dceaf6'; CYAN='#25e2df'; BORDER='#2d4860'
@@ -355,7 +356,7 @@ class VisionScanWorker(QThread):
     def cancel(self):self.cancel_event.set()
     def run(self):
         try:
-            result=vision_scan(self.path,self.end,self.model,lambda done,total:self.progress.emit(int(done*75/total)),self.cancel_event)
+            result=vision_scan(self.path,self.end,self.model,lambda done,total:self.progress.emit(int(done*75/total)),self.cancel_event,profile=getattr(self,'profile','Balanced'))
             if self.audio_enabled:
                 try:
                     audio=scan_audio(self.path,self.end,lambda pct:self.progress.emit(75+int(pct*.25)),self.cancel_event)
@@ -709,7 +710,8 @@ class Editor(QMainWindow):
         reply_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         reply_label.setStyleSheet('QLabel {background:#132838; border-left:3px solid #25e2df; border-radius:8px; padding:14px; font-size:14px;}')
         reply_label.setMinimumHeight(85)
-        left.addWidget(reply_label)
+        # Keep one readable chat history instead of duplicate speech bubbles.
+        reply_label.hide()
         left.addStretch(1)
 
         # Independent edge tab: remains visible even after the entire chat window hides.
@@ -751,9 +753,59 @@ class Editor(QMainWindow):
         avatar.clicked.connect(hide_director)
         peek.clicked.connect(show_director)
 
-        right=QVBoxLayout()
-        right.setSpacing(9)
-        outer.addLayout(right,3)
+        assistant_area=QVBoxLayout()
+        outer.addLayout(assistant_area,3)
+        assistant_tabs=QTabWidget(dlg)
+        assistant_area.addWidget(assistant_tabs)
+        director_page=QWidget();right=QVBoxLayout(director_page);right.setSpacing(9)
+        assistant_tabs.addTab(director_page,'Mr Director')
+        preview_page=QWidget();preview_layout=QVBoxLayout(preview_page)
+        preview_layout.addWidget(QLabel('Review proposed edits before applying changes.'))
+        preview_open=self.button('Open Edit Preview',lambda checked=False:self.open_auto_editor(from_assistant=True))
+        preview_layout.addWidget(preview_open)
+        preview_layout.addStretch(1)
+        assistant_tabs.addTab(preview_page,'Preview Edit')
+        ai_mode_page=QWidget();mode_layout=QVBoxLayout(ai_mode_page)
+        mode_layout.addWidget(QLabel('AI performance — memory budgets are targets, not hard caps.'))
+        performance_mode=QComboBox();performance_mode.addItems(['Eco','Balanced','Accelerated'])
+        performance_mode.setCurrentText(getattr(self,'_ai_performance_mode','Balanced'))
+        mode_layout.addWidget(performance_mode)
+        profile_description=QLabel();profile_description.setWordWrap(True)
+        mode_layout.addWidget(profile_description)
+        def update_profile():
+            name=performance_mode.currentText()
+            self._ai_performance_mode=name
+            profile=PROFILES[name]
+            profile_description.setText(f'{name}: target {profile["budget_gb"]} GB Ollama RAM, {profile["max_frames"]} sampled frames, context {profile["num_ctx"]}. Actual RAM may exceed this target.')
+        performance_mode.currentTextChanged.connect(lambda _value:update_profile())
+        update_profile()
+        refresh_status=QLabel('Refresh AI unloads FragForge models; they reload on the next request.')
+        refresh_status.setWordWrap(True);mode_layout.addWidget(refresh_status)
+        refresh_button=self.button('Refresh AI',lambda:None)
+        mode_layout.addWidget(refresh_button)
+        def refresh_ai():
+            if ai_job_busy() or any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
+                QMessageBox.warning(dlg,'AI busy','Cancel the current analysis and wait for it to finish before refreshing AI.')
+                return
+            refresh_button.setEnabled(False);refresh_status.setText('Releasing models…')
+            from ollama_memory import refresh_models
+            class RefreshWorker(QThread):
+                ready=Signal(object)
+                def run(self):
+                    try:self.ready.emit(refresh_models(['qwen3-vl:2b','qwen3:4b']))
+                    except Exception as exc:self.ready.emit(str(exc))
+            worker=RefreshWorker(dlg);self._refresh_ai_worker=worker
+            def finished(result):
+                refresh_button.setEnabled(True)
+                if isinstance(result,str):refresh_status.setText('Refresh failed: '+result)
+                else:
+                    requested,loaded=result
+                    refresh_status.setText('AI refreshed. Models still loaded: '+(', '.join(loaded) if loaded else 'none')+'. Models reload on next request.')
+                worker.deleteLater()
+            worker.ready.connect(finished);worker.start()
+        refresh_button.clicked.connect(lambda checked=False:refresh_ai())
+        mode_layout.addStretch(1)
+        assistant_tabs.addTab(ai_mode_page,'AI Mode')
         heading=QLabel('MR DIRECTOR  •  YOUR AI EDITING PARTNER')
         heading.setStyleSheet('font-size:17px; font-weight:600; color:#25e2df;')
         right.addWidget(heading)
@@ -830,7 +882,8 @@ class Editor(QMainWindow):
                 QMessageBox.information(dlg,'Mr Director','Tell me what you want edited first.');return
             self._assistant_request=value
             chat.appendPlainText('You: '+value)
-            chat_mode=not bool(re.search(r'\b(edit|cut|trim|montage|highlight|fade|transition|speed|slow|intro|caption|subtitle|sound|music|effect|remove|clip|render|export|loot|kill|zombie|walking|driving|short|video)\b',value,re.I))
+            # Send Message is conversation/recognition only; editing requires explicit Prepare Edit.
+            chat_mode=True
             # Preserve the last valid edit plan while processing follow-up chat.
             # A failed AI response must not disable Prepare Edit.
             send.setEnabled(False)
@@ -842,11 +895,16 @@ class Editor(QMainWindow):
                 else:
                     show_plan(interpret_request(value),'My AI is offline; I prepared a basic edit plan.')
                 return
+            if not acquire_ai_job('chat'):
+                chat.appendPlainText('Mr Director: Another AI job is running. Wait for it to finish.\n')
+                send.setEnabled(True)
+                return
             worker=LocalDirectorWorker(value,model.currentText(),state['history'][-6:],chat_mode)
             state['worker']=worker
             self._local_director_worker=worker
             status.setText('● Mr Director is thinking… Please wait (up to 3 minutes).')
             def ready(plan,reply):
+                release_ai_job('chat')
                 status.setText('● Local AI ready')
                 if plan is None:
                     chat.appendPlainText('Mr Director: '+reply+'\n')
@@ -856,6 +914,7 @@ class Editor(QMainWindow):
                     show_plan(plan,reply)
                 state['history'].extend(['You: '+value,'Mr Director: '+reply])
             def failed(error):
+                release_ai_job('chat')
                 status.setText('Local AI request failed — error shown in chat. You can retry.')
                 if chat_mode:
                     chat.appendPlainText('Mr Director: Sorry, I could not generate a reply.\n')
@@ -902,6 +961,13 @@ class Editor(QMainWindow):
             QMessageBox.information(self,'Auto Edit','Place a gameplay video on V1 first.');return
         source=videos[0]
         dlg=QDialog(self);dlg.setWindowTitle('FragForge AI — Director Edit Preview');dlg.resize(760,530)
+        original_reject=dlg.reject
+        def safe_reject():
+            if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
+                QMessageBox.information(dlg,'Analysis running','Cancel analysis and wait for the worker to finish before closing this preview.')
+                return
+            original_reject()
+        dlg.reject=safe_reject
         dlg.setMinimumSize(610,420)
         screen=QApplication.primaryScreen()
         if screen:
@@ -1199,9 +1265,11 @@ class Editor(QMainWindow):
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
             analysis_bar.setValue(100);analyze.setEnabled(True);apply.setEnabled(bool(windows))
+            release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
             if not windows:
                 status.setText('Analysis finished but no valid clips were selected. Try allowing unverified footage, disabling combat-only focus, or changing the target duration; then reanalyze.')
         def failed(message):
+            release_ai_job('analysis')
             heartbeat.stop();cancel_button.setEnabled(False)
             analysis_bar.setRange(0,100)
             status.setText('Analysis failed — see error details');analyze.setEnabled(True);apply.setEnabled(False)
@@ -1266,6 +1334,7 @@ class Editor(QMainWindow):
             status.setText('Vision AI scanning sampled gameplay frames…')
             analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             worker=VisionScanWorker(source['path'],full_end,model,audio_enabled.isChecked())
+            worker.profile=getattr(self,'_ai_performance_mode','Balanced')
             self._vision_scan_worker=worker
             worker.progress.connect(lambda pct:(analysis_bar.setValue(pct),activity.update(last_update=time.monotonic(),stage=f'Vision scan {pct}% — sampled frames, not verified kills')))
             def done(result):
@@ -1286,6 +1355,12 @@ class Editor(QMainWindow):
             worker.start()
 
         def run_analysis():
+            if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
+                QMessageBox.warning(dlg,'Analysis already running','Only one analysis may run at a time. Cancel and wait before starting another.')
+                return
+            if not acquire_ai_job('analysis'):
+                QMessageBox.warning(dlg,'AI busy','An AI job is already active. Wait for it to finish or cancel it first.')
+                return
             analyze.setEnabled(False);apply.setEnabled(False);markers_button.setEnabled(False);state['markers']=[];cancel_button.setEnabled(True);analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             activity.update(started=time.monotonic(),last_update=time.monotonic(),last_pct=0,stage='Starting analysis')
             status.setText('Launching FFmpeg scene analysis…')
@@ -1478,10 +1553,11 @@ class Editor(QMainWindow):
             QMessageBox.information(self,'Director edit applied',summary)
             dlg.accept()
         def cancel_analysis():
-            worker=getattr(self,'_auto_analysis_worker',None)
-            if worker and worker.isRunning():
-                worker.cancel()
-                status.setText('Cancelling FFmpeg analysis…')
+            workers=[getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None)]
+            running=[w for w in workers if w is not None and w.isRunning()]
+            for worker in running:worker.cancel()
+            if running:
+                status.setText('Cancelling analysis… waiting for active request to stop.')
                 cancel_button.setEnabled(False)
         if back_button:
             def go_back():
@@ -1498,6 +1574,9 @@ class Editor(QMainWindow):
         if auto_analyze:
             QTimer.singleShot(150,run_analysis)
         dlg.exec()
+        if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
+            for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None)):
+                if w is not None and w.isRunning():w.cancel()
 
     def open_effect_library(self):
         # Build the library without copying or loading 100 images on the UI thread.

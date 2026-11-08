@@ -2,6 +2,7 @@
 import base64, json, re, subprocess, urllib.request
 from pathlib import Path
 from media import binary
+from ai_runtime import PROFILES, ollama_ram_gb
 
 HOST='http://127.0.0.1:11434'
 
@@ -15,8 +16,8 @@ def installed_models():
             return [x.get('name','') for x in json.load(r).get('models',[])]
     except Exception:return []
 
-def extract_frame(path,seconds):
-    cmd=[binary('ffmpeg'),'-hide_banner','-loglevel','error','-ss',str(max(0.,seconds)),'-i',str(path),'-frames:v','1','-vf','scale=512:-2','-f','image2pipe','-vcodec','mjpeg','-']
+def extract_frame(path,seconds,width=512):
+    cmd=[binary('ffmpeg'),'-hide_banner','-loglevel','error','-ss',str(max(0.,seconds)),'-i',str(path),'-frames:v','1','-vf',f'scale={width}:-2','-f','image2pipe','-vcodec','mjpeg','-']
     p=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=25,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     if p.returncode or not p.stdout:raise RuntimeError('Frame extraction failed: '+p.stderr.decode(errors='replace')[-250:])
     return base64.b64encode(p.stdout).decode('ascii')
@@ -46,20 +47,20 @@ def _parse_classification(response, seconds):
     return {'time':round(seconds,2),'event':event,'confidence':confidence}
 
 
-def classify_frame(path,seconds,model):
+def classify_frame(path,seconds,model,profile="Balanced"):
     prompt=('Classify the visible Project Zomboid gameplay image. '
             'Allowed event values: combat, looting, walking, driving, menu, other. '
             'Only choose combat when an attack is visibly underway; nearby zombies alone do not prove combat. '
             'One still image cannot verify a kill. '
             'Return a JSON object with keys event and confidence (number 0 to 1).')
-    frame=extract_frame(path,seconds)
+    frame=extract_frame(path,seconds,PROFILES[profile]["image_width"])
     base={'model':model,'prompt':prompt,'images':[frame], 'stream':False,
           'think':False,'format':'json','keep_alive':'30s'}
     errors=[]
     # Retry once with a larger budget when the model consumes all output on reasoning.
     # The second request is not a claim that reasoning was disabled.
     for budget in (384,1536):
-        payload=dict(base,options={'temperature':0,'num_predict':budget,'num_ctx':4096})
+        payload=dict(base,options={'temperature':0,'num_predict':budget,'num_ctx':PROFILES[profile]['num_ctx']})
         try:
             response=_post(HOST+'/api/generate',payload,timeout=150)
             return _parse_classification(response,seconds)
@@ -67,23 +68,28 @@ def classify_frame(path,seconds,model):
             errors.append(str(exc))
     raise ValueError('Vision classification failed: '+'; '.join(errors))
 
-def scan(path,end,model,progress=None,cancel=None,max_frames=48):
+def scan(path,end,model,progress=None,cancel=None,max_frames=None,profile="Balanced"):
     # Uniform samples avoid relying on motion peaks, which previously returned zero.
     # 48 frames across a 47-minute source is only a coarse first pass.
+    max_frames = max_frames or PROFILES[profile]["max_frames"]
     count=max(1,min(max_frames,int(end/12)+1))
     samples=[min(end-0.2,(i+.5)*end/count) for i in range(count)]
     try:
-        return _scan_samples(path, samples, model, progress, cancel)
+        return _scan_samples(path, samples, model, progress, cancel, profile)
     finally:
         from ollama_memory import release_model
         release_model(model)
 
-def _scan_samples(path, samples, model, progress=None, cancel=None):
+def _scan_samples(path, samples, model, progress=None, cancel=None, profile="Balanced"):
     found=[];errors=[]
     count=len(samples)
     for i,t in enumerate(samples):
+        ram = ollama_ram_gb()
+        budget = PROFILES[profile]['budget_gb']
+        if ram is not None and ram > budget:
+            raise RuntimeError(f'AI memory safety stop: llama-server uses {ram:.1f} GB, above the {profile} {budget} GB target. Lower context or switch mode.')
         if cancel is not None and cancel.is_set():raise RuntimeError('Vision scan cancelled')
-        try:found.append(classify_frame(path,t,model))
+        try:found.append(classify_frame(path,t,model,profile))
         except Exception as exc:
             errors.append(str(exc))
             if len(errors)>=3 and not found:raise RuntimeError('Vision scan unavailable: '+errors[-1]+'; try a different vision model such as llava:7b')
