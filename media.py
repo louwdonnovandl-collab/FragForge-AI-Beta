@@ -70,6 +70,31 @@ def nvenc_available():
 def export_layers(clips, destination, encoder='auto', quality='balanced', progress=None, width=1280, height=720, fps=30):
     """Composite V1/V2/V3 and mix A1/A2 using FFmpeg; 1280x720/30fps."""
     if width not in (1280,1920,2560,3840) or height not in (720,1080,1440,2160) or fps not in (30,60):raise ValueError('Unsupported export settings')
+    # Render-only timeline normalization: preserve saved project coordinates.
+    # Consecutive V1 shots are overlapped unless a hard cut is requested.
+    clips = [dict(c) for c in clips]
+    primary = sorted((c for c in clips if c.get('track') == 'V1' and c.get('kind') != 'effect'),
+                     key=lambda c: float(c.get('at', 0)))
+    accumulated = 0.0
+    for previous, following in zip(primary, primary[1:]):
+        boundary = float(following['at'])
+        previous_end = float(previous['at']) + (float(previous['end']) - float(previous['start'])) / max(.01, float(previous.get('speed', 1)))
+        gap = boundary - previous_end
+        mode = str(following.get('transition', 'fade')).lower()
+        if mode in ('cut', 'hard cut', 'none') or abs(gap) > .04:
+            continue
+        previous_duration = (float(previous['end']) - float(previous['start'])) / max(.01, float(previous.get('speed', 1)))
+        next_duration = (float(following['end']) - float(following['start'])) / max(.01, float(following.get('speed', 1)))
+        overlap = min(.35, previous_duration / 3, next_duration / 3)
+        if overlap <= .02:
+            continue
+        for item in clips:
+            if float(item.get('at', 0)) >= boundary - .001:
+                item['at'] = float(item['at']) - overlap
+        # Crossfade both pictures and their accompanying audio over the overlap.
+        previous['fade'] = max(float(previous.get('fade', 0)), overlap)
+        following['fade'] = max(float(following.get('fade', 0)), overlap)
+        accumulated += overlap
     videos = [c for c in clips if c['track'].startswith('V')]
     if not videos:
         raise ValueError('Add a video clip to V1, V2 or V3 before exporting.')
