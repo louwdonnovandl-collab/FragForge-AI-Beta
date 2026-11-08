@@ -696,7 +696,7 @@ class Editor(QMainWindow):
         avatar=QPushButton()
         avatar.setToolTip('Click Eli to hide this window')
         avatar.setStyleSheet('QPushButton {border:0; background:transparent; padding:0;}')
-        avatar_path=os.path.join(os.path.dirname(__file__),'assets','mr_director.png')
+        avatar_path=os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(__file__)),'assets','mr_director.png')
         character=QPixmap(avatar_path)
         if not character.isNull():
             avatar.setIcon(QIcon(character))
@@ -720,7 +720,7 @@ class Editor(QMainWindow):
         peek.setToolTip('Eli is hiding — click his head to reopen the chat')
         peek.setFixedSize(82,150)
         peek.setStyleSheet('QPushButton {background:#10252c; border:2px solid #00d6dc; border-top-left-radius:16px; border-bottom-left-radius:16px; padding:0;}')
-        head_path=os.path.join(os.path.dirname(__file__),'assets','mr_director_head.png')
+        head_path=os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(__file__)),'assets','mr_director_head.png')
         head=QPixmap(head_path)
         if not head.isNull():
             # Show only the left half of his face, as if he is peeking from the right edge.
@@ -1038,7 +1038,7 @@ class Editor(QMainWindow):
         avatar_picture.setAlignment(Qt.AlignCenter)
         avatar_picture.setStyleSheet('background:transparent; border:none;')
         avatar_picture.setMinimumHeight(250)
-        avatar_file=Path(__file__).resolve().parent/'assets'/'editor_x_working.gif'
+        avatar_file=Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))/'assets'/'editor_x_working.gif'
         if avatar_file.is_file():
             editor_movie=QMovie(str(avatar_file), parent=dlg)
             editor_movie.setCacheMode(QMovie.CacheAll)
@@ -1047,7 +1047,7 @@ class Editor(QMainWindow):
             editor_movie.start()
             dlg._editor_x_movie=editor_movie
         else:
-            avatar_file=Path(__file__).resolve().parent/'assets'/'mr_director.png'
+            avatar_file=Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))/'assets'/'mr_director.png'
             if avatar_file.is_file():
                 avatar_picture.setPixmap(QPixmap(str(avatar_file)).scaled(300,300,Qt.KeepAspectRatio,Qt.SmoothTransformation))
         work_layout.addWidget(avatar_picture, 0, Qt.AlignHCenter)
