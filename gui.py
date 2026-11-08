@@ -409,8 +409,10 @@ class Editor(QMainWindow):
         header=QHBoxLayout();main.addLayout(header)
         logo=QLabel('◈  ELI STUDIO');logo.setStyleSheet(f'font-size:21px;font-weight:800;color:{CYAN};');header.addWidget(logo)
         header.addWidget(QLabel('VIDEO EDITOR · v1.0.0 · Eli'));header.addStretch()
-        for name in ['Project','Edit','Effects','Sounds','Transitions','Titles','AI Tools']:
-            b=self.button(name,lambda checked=False, n=name:self.open_feature(n));header.addWidget(b)
+        for name in ['Project','Edit','Effects','Sounds','Transitions','Titles','Eli']:
+            b=self.button(name,lambda checked=False, n=name:self.open_feature(n))
+            if name=='Eli':b.setStyleSheet('QPushButton { background:#60353f; color:#fff0f2; border:1px solid #96515e; } QPushButton:hover { background:#79414e; }')
+            header.addWidget(b)
         header.addWidget(self.button('↶ Undo',lambda checked=False:self.undo()))
         header.addWidget(self.button('↷ Redo',lambda checked=False:self.redo()))
         header.addWidget(self.button('📂 Open',self.open_project));header.addWidget(self.button('↥ Export',self.export_video,True))
@@ -653,7 +655,7 @@ class Editor(QMainWindow):
             self.add_text_overlay()
         elif feature=='Transitions':
             self.open_transitions()
-        elif feature=='AI Tools':
+        elif feature in ('AI Tools','Eli'):
             self.open_ai_assistant()
         else:self.info(feature)
     def resizeEvent(self,event):
@@ -928,7 +930,7 @@ class Editor(QMainWindow):
             def ready(plan,reply):
                 release_ai_job('chat')
                 status.setText('● Local AI ready')
-                thinking_status.setText('Thinking complete · Editing plan available in Prepare Edit.')
+                thinking_status.setText('Thinking complete · Use Prepare Edit to analyze footage.')
                 if plan is None:
                     chat.appendPlainText('Eli: '+reply+'\n')
                     reply_label.setText(reply)
@@ -1078,6 +1080,18 @@ class Editor(QMainWindow):
         editor_tabs.addTab(scroll,'Edit Details')
         layout.addWidget(editor_tabs,1)
         scroll.setWidget(form)
+        # Wheel over settings scrolls the panel, never changes edit values.
+        class EditDetailsWheelGuard(QObject):
+            def eventFilter(self, obj, event):
+                if event.type()==QEvent.Wheel and isinstance(obj,(QComboBox,QDoubleSpinBox)):
+                    bar=scroll.verticalScrollBar()
+                    delta=event.angleDelta().y()
+                    if delta:bar.setValue(bar.value()-round(delta/120)*max(20,bar.singleStep()*3))
+                    elif event.pixelDelta().y():bar.setValue(bar.value()-event.pixelDelta().y())
+                    return True
+                return False
+        wheel_guard=EditDetailsWheelGuard(dlg)
+        dlg._edit_details_wheel_guard=wheel_guard
         # All settings/results live inside the scroll pane; buttons stay pinned.
         settings_layout=form_layout
         def collapsible_section(title, expanded=False):
@@ -1133,7 +1147,6 @@ class Editor(QMainWindow):
         settings_layout.addWidget(music_library_status)
         music_library_tracks=[]
         # Bundled music is discovered relative to source or PyInstaller _MEIPASS.
-        import sys
         _roots=[Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent)),Path(__file__).resolve().parent]
         _included=next((r/'music_library' for r in _roots if (r/'music_library').is_dir()),None)
         if _included:
@@ -1621,7 +1634,7 @@ class Editor(QMainWindow):
                 self.clips=previous_clips
                 self.selected=None
                 self.update_all()
-                QMessageBox.critical(dlg,'Director edit NOT applied',
+                QMessageBox.critical(dlg,'Eli edit NOT applied',
                     'The timeline did not match your request. Original timeline restored.\n\n'
                     + '\n'.join(failures))
                 return
@@ -1644,7 +1657,7 @@ class Editor(QMainWindow):
             self.update_all();self.preview_at=0
             self.capture_history()
             self.note.setText(summary)
-            QMessageBox.information(self,'Director edit applied',summary)
+            QMessageBox.information(self,'Eli edit applied',summary)
             dlg.accept()
         def cancel_analysis():
             workers=[getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None)]
@@ -1665,6 +1678,8 @@ class Editor(QMainWindow):
         cancel_button.clicked.connect(lambda checked=False:cancel_analysis())
         analyze.clicked.connect(lambda checked=False:run_analysis())
         apply.clicked.connect(lambda checked=False:apply_edit())
+        for control in form.findChildren((QComboBox,QDoubleSpinBox)):
+            control.installEventFilter(wheel_guard)
         if auto_analyze:
             QTimer.singleShot(150,run_analysis)
         def cleanup_preview():
