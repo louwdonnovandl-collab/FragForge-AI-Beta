@@ -952,7 +952,7 @@ class Editor(QMainWindow):
                 return
             self._assistant_pending_plan=state['plan']
             self._assistant_pending_tasks=list(state['requests'])
-            # The previous implementation hid the entire chat on every edit request.
+            # Keep the assistant window open while the preview is created.
             # Keep it alive and visible; the edit preview is a separate modal dialog.
             chat.appendPlainText('Mr Director: Opening edit analysis. Your chat will remain available after the preview closes.\n')
             status.setText('● Preparing edit preview…')
@@ -961,6 +961,7 @@ class Editor(QMainWindow):
             def open_requested_preview():
                 try:
                     self.open_auto_editor(auto_analyze=True,from_assistant=True)
+                    assistant_tabs.setCurrentWidget(preview_page)
                 except Exception as exc:
                     chat.appendPlainText('Mr Director: Unable to open edit preview: '+str(exc)+'\n')
                     QMessageBox.warning(dlg,'Edit preview failed',str(exc))
@@ -981,7 +982,15 @@ class Editor(QMainWindow):
         if not videos:
             QMessageBox.information(self,'Auto Edit','Place a gameplay video on V1 first.');return
         source=videos[0]
-        dlg=QDialog(self);dlg.setWindowTitle('FragForge AI — Mr Director is Working');dlg.resize(760,530)
+        # Parent the assistant's working window to its chat, not to the main editor.
+        # A modeless child avoids a nested event loop that previously blocked the chat.
+        parent_dialog=getattr(self,'_director_dialog',None) if from_assistant else None
+        dlg=QDialog(parent_dialog if parent_dialog is not None else self)
+        dlg.setWindowTitle('FragForge AI — Mr Director is Working');dlg.resize(760,530)
+        if from_assistant:
+            dlg.setWindowModality(Qt.NonModal)
+            dlg.setAttribute(Qt.WA_DeleteOnClose,True)
+            self._director_working_dialog=dlg
         original_reject=dlg.reject
         def safe_reject():
             if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
@@ -1202,7 +1211,13 @@ class Editor(QMainWindow):
         settings_layout=collapsible_section('05  Apply & review', True)
         replace.setChecked(True);replace.hide()
         status=QLabel('Click Analyze to find potential edit points.');settings_layout.addWidget(status)
-        status.textChanged.connect(lambda message:work_stage.setText(message[:180]))
+        # QLabel has no textChanged signal. Mirror status updates through a safe setter.
+        _status_set_text = status.setText
+        def update_status(message):
+            message = str(message)
+            _status_set_text(message)
+            work_stage.setText(message[:180])
+        status.setText = update_status
         analysis_bar=work_bar
         def preset_changed(index):
             custom=(index==1)
@@ -1642,10 +1657,21 @@ class Editor(QMainWindow):
         apply.clicked.connect(lambda checked=False:apply_edit())
         if auto_analyze:
             QTimer.singleShot(150,run_analysis)
-        dlg.exec()
-        if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
-            for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None)):
-                if w is not None and w.isRunning():w.cancel()
+        def cleanup_preview():
+            if getattr(self,'_director_working_dialog',None) is dlg:
+                self._director_working_dialog=None
+            for worker in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None)):
+                if worker is not None and worker.isRunning():
+                    worker.cancel()
+            if from_assistant and parent_dialog is not None and parent_dialog.isVisible():
+                parent_dialog.raise_()
+        if from_assistant:
+            dlg.finished.connect(lambda _result:cleanup_preview())
+            dlg.show()
+            dlg.raise_()
+        else:
+            dlg.exec()
+            cleanup_preview()
 
     def open_effect_library(self):
         # Build the library without copying or loading 100 images on the UI thread.
