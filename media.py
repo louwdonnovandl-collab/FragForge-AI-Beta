@@ -92,7 +92,7 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
                      'Cool':'eq=saturation=1.06:gamma_b=1.1:gamma_r=0.94,',
                      'High Contrast':'eq=contrast=1.3:saturation=1.1,'}
             effect=effects.get(c.get('effect','None'),'')
-            fade=max(0,min(float(c.get('fade',0)),length/2))
+            fade=max(0,min(float(c.get('fade',0.35 if c.get('transition','').lower() not in ('cut','hard cut','none') else 0)),length/2))
             fades=(f'fade=t=in:st=0:d={fade:.3f}:alpha=1,'
                    f'fade=t=out:st={max(0,length-fade):.3f}:d={fade:.3f}:alpha=1,') if fade>.001 else ''
             if c.get('kind')=='effect':
@@ -117,7 +117,7 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             while rate<.5:factors.append(.5);rate/=.5
             factors.append(rate)
             tempo=','.join(f'atempo={factor:.5f}' for factor in factors)
-            fade=max(0,min(float(c.get('fade',0)),length/2))
+            fade=max(0,min(float(c.get('fade',0.35 if c.get('transition','').lower() not in ('cut','hard cut','none') else 0)),length/2))
             afades=(f',afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(0,length-fade):.3f}:d={fade:.3f}') if fade>.001 else ''
             gain=max(0.,min(2.,float(c.get('volume',1.0))))*(0.5 if c.get('duck_music') else 1.0)
             parts.append(f'[{i}:a]atrim=start={c["start"]:.4f}:duration={length*c.get("speed",1.):.4f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
