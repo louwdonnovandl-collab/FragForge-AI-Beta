@@ -7,6 +7,7 @@ from pathlib import Path
 
 EXTENSIONS={'.mp3','.wav','.flac','.m4a','.ogg','.aac'}
 GENRES={
+ 'ncs': ('ncs','nocopyrightsounds','no copyright sounds'),
  'rock_metal': ('rock','metal','heavy','guitar','hardcore','punk'),
  'cinematic_action': ('cinematic','action','battle','trailer','orchestral'),
  'dark_survival': ('dark','survival','horror','zombie','scary','suspense'),
@@ -28,7 +29,7 @@ def track_metadata(path):
   try:
    meta=json.loads(sidecar.read_text(encoding='utf-8'))
    if isinstance(meta,dict):
-    for key in ('title','genre','mood','license','version'):
+    for key in ('title','genre','mood','license','version','artist','credit'):
      if isinstance(meta.get(key),str):data[key]=meta[key]
   except (ValueError,OSError):pass
  return data

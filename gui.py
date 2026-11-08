@@ -869,7 +869,7 @@ class Editor(QMainWindow):
             state['plan']=plan
             state['plan_text']=self._assistant_request
             preview.setPlainText(describe_plan(plan))
-            chat.appendPlainText('Mr Director: '+reply+'\n')
+            chat.appendPlainText('Editor-X: '+reply+'\n')
             reply_label.setText(reply)
             launch.setEnabled(True)
             send.setEnabled(True)
@@ -879,28 +879,28 @@ class Editor(QMainWindow):
                 QMessageBox.information(dlg,'Mr Director','Tell me what you want edited first.');return
             self._assistant_request=value
             chat.appendPlainText('You: '+value)
-            # Editing commands launch the real editing workflow; chat remains conversational.
-            edit_intent=bool(re.search(r'\b(edit|montage|highlight|clip|cut|trim)\b',value,re.I) and re.search(r'\b(video|gameplay|footage|second|minute|combat|kill|music|rock|montage|highlight|clip)\b',value,re.I))
+            # Send Message is conversation-only. Never start analysis here.
+            # Remember edit instructions so Prepare Edit can act on them later.
+            edit_intent=bool(re.search(r'\b(edit|montage|highlight|clip|cut|trim|fade|transition|music|rock|combat|kill|video|gameplay)\b',value,re.I))
             if edit_intent:
                 state['plan']=interpret_request(value)
                 state['plan_text']=value
-                chat.appendPlainText('Mr Director: I will prepare the requested edit using the actual editor. I will ask before changing your timeline.\n')
-                run_edit()
-                return
+                preview.setPlainText(describe_plan(state['plan']))
+                launch.setEnabled(True)
             chat_mode=True
             # Preserve the last valid edit plan while processing follow-up chat.
             # A failed AI response must not disable Prepare Edit.
             send.setEnabled(False)
             if not state['models']:
                 if chat_mode:
-                    chat.appendPlainText('Mr Director: My local AI is offline. Click Connect or Install Free AI.\n')
+                    chat.appendPlainText('Editor-X: My local AI is offline. Your edit instructions are saved; click Prepare Edit to start, or Connect to chat.\n')
                     reply_label.setText('Connect my local AI so we can chat!')
                     send.setEnabled(True)
                 else:
                     show_plan(interpret_request(value),'My AI is offline; I prepared a basic edit plan.')
                 return
             if not acquire_ai_job('chat'):
-                chat.appendPlainText('Mr Director: Another AI job is running. Wait for it to finish.\n')
+                chat.appendPlainText('Editor-X: Another AI job is running. Wait for it to finish.\n')
                 send.setEnabled(True)
                 return
             worker=LocalDirectorWorker(value,model.currentText(),state['history'][-6:],chat_mode)
@@ -911,17 +911,17 @@ class Editor(QMainWindow):
                 release_ai_job('chat')
                 status.setText('● Local AI ready')
                 if plan is None:
-                    chat.appendPlainText('Mr Director: '+reply+'\n')
+                    chat.appendPlainText('Editor-X: '+reply+'\n')
                     reply_label.setText(reply)
                     send.setEnabled(True)
                 else:
                     show_plan(plan,reply)
-                state['history'].extend(['You: '+value,'Mr Director: '+reply])
+                state['history'].extend(['You: '+value,'Editor-X: '+reply])
             def failed(error):
                 release_ai_job('chat')
                 status.setText('Local AI request failed — error shown in chat. You can retry.')
                 if chat_mode:
-                    chat.appendPlainText('Mr Director: Sorry, I could not generate a reply.\n')
+                    chat.appendPlainText('Editor-X: I could not generate a reply. Your instructions are saved; Prepare Edit is still available.\n')
                     reply_label.setText('I hit a connection issue. Please try again.')
                     send.setEnabled(True)
                 else:
@@ -954,7 +954,7 @@ class Editor(QMainWindow):
             self._assistant_pending_tasks=list(state['requests'])
             # Keep the assistant window open while the preview is created.
             # Keep it alive and visible; the edit preview is a separate modal dialog.
-            chat.appendPlainText('Mr Director: Opening edit analysis. Your chat will remain available after the preview closes.\n')
+            chat.appendPlainText('Editor-X: Preparing your edit now. Your chat remains available.\n')
             status.setText('● Preparing edit preview…')
             send.setEnabled(False)
             launch.setEnabled(False)
@@ -1116,8 +1116,28 @@ class Editor(QMainWindow):
         _roots=[Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent)),Path(__file__).resolve().parent]
         _included=next((r/'music_library' for r in _roots if (r/'music_library').is_dir()),None)
         if _included:
-            music_library_tracks.extend(x['path'] for x in scan_library(_included,limit=100))
+            music_library_tracks.extend(x['path'] for x in scan_library(_included,limit=150))
             music_library_status.setText(f'Included music library: {len(music_library_tracks)} versions (50 songs)')
+        # NCS recordings are never bundled: user imports their own licensed files.
+        from ncs_import import user_library, import_track
+        ncs_root=user_library()
+        music_library_tracks.extend(x['path'] for x in scan_library(ncs_root,limit=20))
+        music_library_status.setText(f'Music library: {len(music_library_tracks)} files including {len(scan_library(ncs_root,limit=20))}/20 user-imported NCS tracks')
+        def import_ncs_music():
+            path,_=QFileDialog.getOpenFileName(dlg,'Import an NCS song you downloaded',str(Path.home()),'Audio (*.mp3 *.ogg *.wav *.flac *.m4a *.aac)')
+            if not path:return
+            title,ok=QInputDialog.getText(dlg,'NCS song title','Song title (for credits):',text=Path(path).stem)
+            if not ok:return
+            artist,ok=QInputDialog.getText(dlg,'NCS artist','Artist name (for credits):')
+            if not ok:return
+            try:
+                imported=import_track(path,title,artist)
+                music_library_tracks.append(imported)
+                music_library_status.setText(f'Music library: {len(music_library_tracks)} files including {len(scan_library(ncs_root,limit=20))}/20 user-imported NCS tracks')
+                QMessageBox.information(dlg,'NCS track imported',f'Imported: {title} — {artist}\nEditor-X can now select this song by name or NCS genre.\nRemember to credit the artist when publishing.')
+            except Exception as exc:
+                QMessageBox.warning(dlg,'Import failed',str(exc))
+        settings_layout.addWidget(self.button('Import NCS song (20-track personal collection)…',lambda checked=False:import_ncs_music()))
         music_request=QLineEdit();music_request.setPlaceholderText('Song title or genre + track number + full/loop (e.g. dark survival track 4 loop)')
         settings_layout.addWidget(music_request)
         music_selection=QLabel('Mr Director: no track selected')
@@ -1541,11 +1561,11 @@ class Editor(QMainWindow):
                 clip.update(start=a,end=b,at=position,track='V1',speed=rate)
                 # Short, bounded fades soften automatic montage boundaries without
                 # altering the requested final playback duration.
-                clip['fade']=min(.18, max(0., length_hint / 5.0)) if (length_hint := (b-a)/max(rate,.1)) > .35 else 0.
+                clip['fade']=min(.22, (b-a)/max(rate,.1)/5) if (i==0 or i==len(timeline)-1) else 0.0
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
                 if clip.get('audio'):
-                    clip['volume']=.42
+                    clip['volume']=.30
                 clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Director edit — AI candidate, not verified kill')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
@@ -1576,8 +1596,8 @@ class Editor(QMainWindow):
                     while at<position-.05:
                         take=min(music_length,position-at)
                         self.clips.append(dict(path=chosen_music,start=0.,end=take,at=at,
-                                               track='A2',audio=True,kind='audio',speed=1.,
-                                               effect='None',fade=min(.75,take/4),volume=.24,
+                                               track='A1',audio=True,kind='audio',speed=1.,
+                                               effect='None',fade=(min(.75,take/4) if at+take>=position-.05 else 0.),volume=.42,
                                                label='Mr Director background music — selected from requested genre'))
                         at+=take
                 except Exception as exc:errors.append('Background music: '+str(exc))
@@ -1630,6 +1650,9 @@ class Editor(QMainWindow):
                      'Activity candidates are NOT verified kills. Review before exporting.')
             if music_path.text().strip():
                 summary+='\nMusic: '+Path(music_path.text().strip()).stem
+                from music_intelligence import track_metadata
+                credit=track_metadata(music_path.text().strip()).get('credit')
+                if credit:summary+='\nMusic credit (copy into video description):\n'+credit
             if pending and pending.get('focus_kills'):
                 summary+=('\nCOMBAT: user-confirmed timestamps used (not automatic kill recognition).' if combat_markers.text().strip() else '\nKILLS NOT VERIFIED: unverified action montage.')
             if errors and any(e.startswith('Background music:') for e in errors):
