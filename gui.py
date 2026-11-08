@@ -596,7 +596,7 @@ class Editor(QMainWindow):
                 obj.setProperty('fragforge_wheel_armed',True)
             elif event.type()==QEvent.FocusOut:
                 obj.setProperty('fragforge_wheel_armed',False)
-            elif event.type()==QEvent.Wheel and not obj.property('fragforge_wheel_armed'):
+            elif event.type()==QEvent.Wheel:
                 # Explicitly scroll the parent panel so behavior is consistent
                 # across Qt/Windows versions and different control types.
                 bar=self.properties_scroll.verticalScrollBar()
@@ -823,8 +823,13 @@ class Editor(QMainWindow):
         install=self.button('Install Free AI',lambda checked=False:install_local_ai());row.addWidget(install)
         status=QLabel('Checking local Ollama…');status.setWordWrap(True);right.addWidget(status)
         chat=QPlainTextEdit();chat.setReadOnly(True)
-        chat.setPlainText('Eli: Welcome to FragForge!')
+        chat.setPlainText('Eli: Welcome to Eli Studio!')
         right.addWidget(chat,4)
+        thinking_status=QLabel('')
+        thinking_status.setWordWrap(True)
+        thinking_status.setStyleSheet('color:#84909d; font-size:12px; font-style:italic; padding:4px;')
+        thinking_status.hide()
+        right.addWidget(thinking_status)
         request=QPlainTextEdit()
         request.setPlaceholderText('Ask me a question, or describe the video edit you want…')
         request.setPlainText(getattr(self,'_assistant_request',''))
@@ -918,9 +923,12 @@ class Editor(QMainWindow):
             state['worker']=worker
             self._local_director_worker=worker
             status.setText('● Eli is thinking… Please wait.')
+            thinking_status.setText('Thinking · Interpreting your request…')
+            thinking_status.show()
             def ready(plan,reply):
                 release_ai_job('chat')
                 status.setText('● Local AI ready')
+                thinking_status.setText('Thinking complete · Editing plan available in Prepare Edit.')
                 if plan is None:
                     chat.appendPlainText('Eli: '+reply+'\n')
                     reply_label.setText(reply)
@@ -930,7 +938,8 @@ class Editor(QMainWindow):
                 state['history'].extend(['You: '+value,'Eli: '+reply])
             def failed(error):
                 release_ai_job('chat')
-                status.setText('Local AI request failed — error shown in chat. You can retry.')
+                status.setText('Local AI request failed — you can retry.')
+                thinking_status.setText('Thinking interrupted · Local model unavailable.')
                 if chat_mode:
                     chat.appendPlainText('Eli: I could not generate a reply. Your instructions are saved; Prepare Edit is still available.\n')
                     reply_label.setText('I hit a connection issue. Please try again.')
