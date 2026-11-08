@@ -27,7 +27,7 @@ def track_metadata(path):
   try:
    meta=json.loads(sidecar.read_text(encoding='utf-8'))
    if isinstance(meta,dict):
-    for key in ('title','genre','mood','license'):
+    for key in ('title','genre','mood','license','version'):
      if isinstance(meta.get(key),str):data[key]=meta[key]
   except (ValueError,OSError):pass
  return data
@@ -35,18 +35,28 @@ def track_metadata(path):
 def scan_library(folder,limit=50):
  root=Path(folder)
  if not root.is_dir():return []
- return [track_metadata(p) for p in sorted(root.iterdir(),key=lambda p:p.name.lower()) if p.is_file() and p.suffix.lower() in EXTENSIONS][:max(0,limit)]
+ return [track_metadata(p) for p in sorted(root.rglob('*'),key=lambda p:str(p).lower()) if p.is_file() and p.suffix.lower() in EXTENSIONS][:max(0,limit)]
 
 def choose_track(tracks,request):
  items=[track_metadata(x['path'] if isinstance(x,dict) else x) for x in tracks]
  if not items:return None
  request=str(request or '').strip().lower()
- # Explicit title takes priority over genre; avoid silently substituting a different named song.
+ version='loop' if any(x in request for x in ('loop','looping','short version')) else 'full'
+ import re
+ cleaned=re.sub(r'\b(full.length|full version|full|looping|loop version|short version|loop|version)\b','',request).strip(' -.,:')
+ # Exact title or numbered genre requests; no arbitrary substitution for a named song.
  for item in items:
-  if request and (request==item['title'].lower() or request==item['path'].name.lower()):
-   return dict(item,reason='exact title match')
+  if item.get('version')==version and (cleaned==item['title'].lower() or cleaned==item['path'].name.lower() or cleaned==item['path'].stem.lower()):
+   return dict(item,reason='exact requested track and version')
  genre=genre_for_request(request)
- if genre:
-  candidates=[x for x in items if x['genre']==genre]
-  if candidates:return dict(candidates[0],reason='genre metadata match')
- return dict(items[0],reason='default first track; review before applying')
+ match=re.search(r'\b(?:track|song|number|#)\s*(\d{1,2})\b',request)
+ if genre and match:
+  num=int(match.group(1))
+  candidates=[x for x in items if x['genre']==genre and x.get('version')==version]
+  candidates.sort(key=lambda x:x['path'].name)
+  if 1<=num<=len(candidates):return dict(candidates[num-1],reason='requested genre, number and version')
+  return None
+ if genre and not match and not any(x in request for x in ('track','song')):
+  candidates=[x for x in items if x['genre']==genre and x.get('version')==version]
+  if candidates:return dict(candidates[0],reason='genre match; review before applying')
+ return None

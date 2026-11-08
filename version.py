@@ -1,3 +1,3 @@
-VERSION = '0.10.50-beta.3'
+VERSION = '0.10.50-beta.6'
 DISPLAY_NAME = f'FragForge AI v{VERSION} — Director Beta'
-ARTIFACT_NAME = 'FF_050_beta_3'
+ARTIFACT_NAME = 'FF_050_beta_6'

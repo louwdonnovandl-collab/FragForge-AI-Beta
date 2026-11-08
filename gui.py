@@ -1034,12 +1034,19 @@ class Editor(QMainWindow):
             if path:music_path.setText(path)
         music_button.clicked.connect(lambda checked=False:choose_music())
         # User-supplied, locally stored music; no unlicensed tracks bundled.
-        library_button=self.button('Choose music library folder…',lambda:None)
+        library_button=self.button('Change music library folder…',lambda:None)
         settings_layout.addWidget(library_button)
-        music_library_status=QLabel('Music library: no folder selected (up to 50 local tracks)')
+        music_library_status=QLabel('Music library: loading included tracks…')
         settings_layout.addWidget(music_library_status)
         music_library_tracks=[]
-        music_request=QLineEdit();music_request.setPlaceholderText('Describe genre or enter exact song title (e.g. dark survival, metal, epic)')
+        # Bundled music is discovered relative to source or PyInstaller _MEIPASS.
+        import sys
+        _roots=[Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent)),Path(__file__).resolve().parent]
+        _included=next((r/'music_library' for r in _roots if (r/'music_library').is_dir()),None)
+        if _included:
+            music_library_tracks.extend(x['path'] for x in scan_library(_included,limit=100))
+            music_library_status.setText(f'Included music library: {len(music_library_tracks)} versions (50 songs)')
+        music_request=QLineEdit();music_request.setPlaceholderText('Song title or genre + track number + full/loop (e.g. dark survival track 4 loop)')
         settings_layout.addWidget(music_request)
         music_selection=QLabel('Mr Director: no track selected')
         settings_layout.addWidget(music_selection)
@@ -1050,14 +1057,16 @@ class Editor(QMainWindow):
             if choice:
                 music_path.setText(str(choice['path']))
                 music_selection.setText(f'Mr Director selected: {choice["title"]} · {choice["genre"]} · {choice["reason"]}')
+            else:
+                QMessageBox.information(dlg,'Music not found','No matching song/version. Choose an available title or genre + track number.')
         settings_layout.addWidget(self.button('Mr Director — Select requested track',lambda checked=False:select_requested_music()))
         def choose_music_library():
             folder=QFileDialog.getExistingDirectory(dlg,'Choose licensed music folder',str(Path.home()))
             if not folder:return
             extensions={'.mp3','.wav','.flac','.m4a','.ogg','.aac'}
-            tracks=[item['path'] for item in scan_library(folder,limit=50)]
+            tracks=[item['path'] for item in scan_library(folder,limit=100)]
             music_library_tracks.clear();music_library_tracks.extend(tracks)
-            music_library_status.setText(f'Music library: {len(tracks)} tracks found (maximum 50)')
+            music_library_status.setText(f'Music library: {len(tracks)} tracks found (maximum 100)')
             if tracks and not music_path.text().strip():
                 choice=choose_track(tracks,music_request.text() or str((pending or {}).get('music','')))
                 if choice:
@@ -1264,7 +1273,7 @@ class Editor(QMainWindow):
                 status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).')
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
-            analysis_bar.setValue(100);analyze.setEnabled(True);apply.setEnabled(bool(windows))
+            analysis_bar.setValue(100);activity.update(last_update=time.monotonic(),stage='Analysis complete — review selected clips');analyze.setEnabled(True);apply.setEnabled(bool(windows))
             release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
             if not windows:
                 status.setText('Analysis finished but no valid clips were selected. Try allowing unverified footage, disabling combat-only focus, or changing the target duration; then reanalyze.')
@@ -1285,6 +1294,9 @@ class Editor(QMainWindow):
                 analysis_bar.setRange(0,100)  # hold real completed percentage; never animate fictitious progress
             if analyze.isEnabled():
                 heartbeat.stop();return
+            if time.monotonic()-activity['last_update']>=180:
+                status.setText(f"{activity['stage']} · {elapsed}s elapsed · no update for 3 minutes; request may be stalled. Use Cancel analysis.")
+                return
             status.setText(f"{activity['stage']} · {elapsed}s elapsed" +
                            (' · waiting for processing update' if time.monotonic()-activity['last_update']>=10 else ''))
         heartbeat.timeout.connect(tick_analysis)
@@ -1336,7 +1348,7 @@ class Editor(QMainWindow):
             worker=VisionScanWorker(source['path'],full_end,model,audio_enabled.isChecked())
             worker.profile=getattr(self,'_ai_performance_mode','Balanced')
             self._vision_scan_worker=worker
-            worker.progress.connect(lambda pct:(analysis_bar.setValue(pct),activity.update(last_update=time.monotonic(),stage=f'Vision scan {pct}% — sampled frames, not verified kills')))
+            worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage=f'Vision scan {pct}% — sampled frames, not verified kills')))
             def done(result):
                 state['vision']=result
                 state['markers']=build_markers(result.get('samples',[]),result.get('audio',{}).get('events',[]))
@@ -1352,6 +1364,7 @@ class Editor(QMainWindow):
                     status.setText(status.text()+f' AI flagged {len(hits)} candidate combat frames; audio transients: {len(result.get("audio",{}).get("events",[]))}. Review before export.')
             worker.ready.connect(done)
             worker.failed.connect(failed)
+            activity.update(last_update=time.monotonic(),stage='Vision scan running')
             worker.start()
 
         def run_analysis():
@@ -1379,14 +1392,14 @@ class Editor(QMainWindow):
                     analysis_bar.setRange(0,100)
                 elif message.startswith('Analysis complete'):
                     analysis_bar.setRange(0,100)
-                    analysis_bar.setValue(100)
+                    analysis_bar.setValue(95 if vision_enabled.isChecked() else 99)
                 tick_analysis()
             def update_progress(percent):
                 activity['last_update']=time.monotonic()
                 activity['last_pct']=percent
                 if percent<100 and not activity['stage'].startswith('Detecting'):
                     analysis_bar.setRange(0,100)
-                    analysis_bar.setValue(percent)
+                    analysis_bar.setValue(min(95, percent) if vision_enabled.isChecked() else min(99, percent))
                 tick_analysis()
             worker.stage.connect(update_stage)
             worker.progress.connect(update_progress)

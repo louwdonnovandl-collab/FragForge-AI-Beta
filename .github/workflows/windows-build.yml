@@ -180,6 +180,7 @@ jobs:
             --add-data "assets;assets" `
             --add-data "effects_assets;effects_assets" `
             --add-data "sound_assets;sound_assets" `
+            --add-data "music_library;music_library" `
             --hidden-import version `
             --add-binary "tools/ffmpeg.exe;." `
             --add-binary "tools/ffprobe.exe;." `
