@@ -25,6 +25,14 @@ def build_markers(vision_samples, audio_events, radius=3.0):
                         'confidence': round(confidence, 3), 'source': 'vision',
                         'audio_correlated': bool(nearby), 'verified': False,
                         'note': 'Sampled frame; not proof of a kill or completed action'})
+        if frame.get('blood_splatter'):
+            try: blood_conf=max(0.,min(1.,float(frame.get('blood_confidence',0))))
+            except (TypeError,ValueError): blood_conf=0.
+            if blood_conf >= .5:
+                markers.append({'time':round(t,2),'event':'blood_splatter_candidate',
+                                'confidence':round(blood_conf,3),'source':'vision',
+                                'audio_correlated':bool(nearby),'verified':False,
+                                'note':'Possible visible blood in one sampled frame; not a confirmed hit, new splatter or kill'})
     for event in audio_events or []:
         t = max(0., float(event.get('time', 0)))
         # Audio transient means a sudden amplitude change, NOT a gunshot.
@@ -44,9 +52,10 @@ def director_report(markers, max_lines=25):
     visual = [m for m in markers if m['source'] == 'vision']
     audio = [m for m in markers if m['source'] == 'audio']
     combat = [m for m in visual if m['event'] == 'combat' and m['confidence'] >= .65]
+    blood = [m for m in visual if m['event'] == 'blood_splatter_candidate']
     lines = ["MR DIRECTOR — GAMEPLAY RECOGNITION REVIEW",
              f"I sampled {len(visual)} gameplay frames and found {len(audio)} audio peaks.",
-             f"I identified {len(combat)} possible combat moments. These are NOT verified kills.",
+             f"I identified {len(combat)} possible combat moments and {len(blood)} possible blood visuals. Neither verifies kills.",
              "Audio peaks are not yet classified as gunshots, explosions or voices.",
              "Please check the timestamps and tell me which events are correct.", "", "CANDIDATE MARKERS"]
     for marker in markers[:max_lines]:

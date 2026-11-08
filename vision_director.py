@@ -44,7 +44,13 @@ def _parse_classification(response, seconds):
     if event not in EVENTS:event='other'
     try:confidence=max(0.,min(1.,float(data.get('confidence',0))))
     except (ValueError,TypeError):confidence=0.
-    return {'time':round(seconds,2),'event':event,'confidence':confidence}
+    # This is a single-frame *candidate*, never proof of a new splatter or kill.
+    raw=data.get('blood_splatter',False)
+    blood=(raw is True or str(raw).lower() in ('true','yes','1'))
+    try: blood_confidence=max(0.,min(1.,float(data.get('blood_confidence',0)))) if blood else 0.
+    except (ValueError,TypeError): blood_confidence=0.
+    return {'time':round(seconds,2),'event':event,'confidence':confidence,
+            'blood_splatter':blood,'blood_confidence':blood_confidence}
 
 
 def classify_frame(path,seconds,model,profile="Balanced"):
@@ -52,7 +58,10 @@ def classify_frame(path,seconds,model,profile="Balanced"):
             'Allowed event values: combat, looting, walking, driving, menu, other. '
             'Only choose combat when an attack is visibly underway; nearby zombies alone do not prove combat. '
             'One still image cannot verify a kill. '
-            'Return a JSON object with keys event and confidence (number 0 to 1).')
+            'Also indicate whether an apparent blood splatter or blood stain is VISIBLE in the image; '
+            'do not mistake red UI, lighting, clothing or paint for blood. '
+            'Blood does not establish a hit or kill, and a still image cannot establish when blood appeared. '
+            'Return JSON keys event, confidence (0 to 1), blood_splatter (boolean), blood_confidence (0 to 1).')
     frame=extract_frame(path,seconds,PROFILES[profile]["image_width"])
     base={'model':model,'prompt':prompt,'images':[frame], 'stream':False,
           'think':False,'format':'json','keep_alive':'30s'}
