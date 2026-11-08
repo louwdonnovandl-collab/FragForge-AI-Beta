@@ -146,8 +146,8 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
     chosen_model=DEFAULT_MODEL if DEFAULT_MODEL in available_models_safe() else model
     for endpoint in ('/api/chat','/api/generate'):
         try:
-            payload={'model':chosen_model,'stream':False,'think':False,
-                     'keep_alive':0,'options':_options(700,.35)}
+            payload={'model':chosen_model,'stream':False,'think':True,
+                     'keep_alive':0,'options':_options(240,.35)}
             if endpoint=='/api/chat':payload['messages']=messages
             else:payload['prompt']=system+'\nUser: '+message[:1500]+'\nEditor-X:'
             data=_post(endpoint,payload,timeout=150)
