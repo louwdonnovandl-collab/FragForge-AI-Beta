@@ -1,0 +1,1 @@
+FragForge v0.10.32: simplified Mr Director UI, reply below avatar, removed bottom bubble, collapsed editing details, fixed local AI worker constructor mismatch, added natural chat with Ollama /api/chat. Chat vs edit is keyword-based; editing execution capabilities are unchanged. Windows runtime testing required.

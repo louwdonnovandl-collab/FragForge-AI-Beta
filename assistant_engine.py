@@ -1,0 +1,90 @@
+"""Offline, deterministic editing instruction interpreter. No remote services."""
+import re
+
+def interpret_request(text):
+    """Extract explicit user constraints independently of the conversational AI.
+
+    Never let an LLM rewrite a numeric duration or speed requested by the user.
+    """
+    t = text.lower().replace('×', 'x')
+    intro = re.search(r'(?:intro|opening)[^\n.]{0,65}?(\d{1,2})\s*(?:seconds?|secs?|s\b)', t)
+    intro_alt = re.search(r'(\d{1,2})\s*(?:seconds?|secs?|s\b)[^\n.]{0,40}?(?:intro|opening)', t)
+    intro_seconds = min(20, int((intro or intro_alt).group(1))) if (intro or intro_alt) else (10 if re.search(r'\b(intro|opening)\b', t) else 0)
+    target = re.search(r'\b(\d{1,3}(?:[.,]\d+)?)\s*(seconds?|secs?|minutes?|mins?|min\b)\s*(?:short|video|clip|montage|edit|reel)\b', t)
+    if not target:
+        target = re.search(r'\b(?:make|create|build|cut|trim|reduce|shorten|edit|down|to|into)\b[^\n.]{0,80}?\b(\d{1,3}(?:[.,]\d+)?)\s*(seconds?|secs?|minutes?|mins?|min\b)\b', t)
+    target_seconds = 0.
+    if target:
+        target_seconds = float(target.group(1).replace(',', '.')) * (60 if target.group(2).startswith('min') else 1)
+        target_seconds = min(10800., max(1., target_seconds))
+    speed_match = re.search(r'\b(?:sped\s*up|speed(?:\s*up)?|playback)(?:\s*(?:to|at|by))?\s*(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)?', t) or re.search(r'\b(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)', t)
+    requested_speed = max(.25,min(8.,float(speed_match.group(1).replace(',','.')))) if speed_match else 2.
+    highlight = bool(re.search(r'\b(highlights?|montage|shorts?|reels?|tiktok|clips?)\b',t))
+    focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|multikills?)\b',t))
+    focus_loot = bool(re.search(r'\b(loot|looting|inventory|supplies|containers?)\b',t))
+    no_sounds = bool(re.search(r'\b(no|without|avoid)\s+(?:random\s+)?(?:sound|audio|boom|sfx|music)',t))
+    no_fx = bool(re.search(r'\b(no|without|avoid)\s+(?:visual\s+)?(?:effects?|fx|zooms?)',t))
+    music = not no_sounds and bool(re.search(r'\b(music|songs?|tracks?|rock|jams?|soundtrack|background beat)\b',t))
+    return {
+        'mode':'highlight' if highlight or (target_seconds and target_seconds <= 180) else 'longform',
+        'target_seconds':target_seconds,
+        'target_minutes':target_seconds/60 if target_seconds else 0,
+        'remove_stagnant':not bool(re.search(r'\bkeep\s+(?:all\s+)?loading screens',t)),
+        'speedup':not bool(re.search(r'\b(no|without|avoid)\s+(?:speed.?up|fast forward)',t)),
+        'effects':not no_fx and bool(re.search(r'\b(effects?|zoom|flash|shake|cinematic|visual|fx)\b',t)),
+        'sounds':not no_sounds and bool(re.search(r'\b(sounds?|audio|sfx|whoosh|impact|music|jams?|rock)\b',t)),
+        'music':music,
+        'captions':bool(re.search(r'\b(captions?|subtitles?|on.screen text)\b',t)),
+        'intro_seconds':intro_seconds,
+        'requested_speed':requested_speed,
+        'explicit_speed':bool(speed_match),
+        'focus_kills':focus_kills,
+        'focus_loot':focus_loot,
+        'fade_transition':bool(re.search(r'\b(fade|transition|dissolve)\b',t)),
+        'original':text.strip(),
+    }
+
+def describe_plan(p):
+    yes=lambda v:'Requested' if v else 'Not requested'
+    lines=[
+        'EDIT TYPE: '+('Short highlight montage' if p['mode']=='highlight' else 'Preserve long-form gameplay'),
+        'Stagnant/loading-screen removal: '+('Keep footage' if not p['remove_stagnant'] else 'Analyze and suggest cuts'),
+        f"Playback speed: {p['requested_speed']:g}× {'(explicitly requested)' if p.get('explicit_speed') else '(automatic pacing default)'}",
+        'Visual effects: '+yes(p['effects']),
+        'Sound effects: '+yes(p['sounds']),
+        'Background music: '+yes(p.get('music',False))+' (requires a selected audio track)',
+        'Captions/subtitles: '+yes(p['captions']),
+        'Target output duration: '+(f"{p.get('target_seconds',0):g} seconds" if p.get('target_seconds') else 'Automatic') ,
+        'Create intro: '+(str(p['intro_seconds'])+' seconds' if p['intro_seconds'] else 'Not requested'),
+        'Focus on kills: '+yes(p.get('focus_kills',False)),
+        'Focus on looting: '+yes(p.get('focus_loot',False)),
+        'Fade transition: '+yes(p.get('fade_transition',False)),
+        '',
+        'SUPPORTED NOW: scene/motion analysis, long-form cuts, 2× pacing, fades, short-montage effects and soundboard.',
+        'NOT YET AUTOMATED: speech transcription, semantic gameplay events, context-sensitive long-form effects, image-generated intros.',
+        'NEXT: Open Auto Edit, inspect the settings and analysis results, then approve changes.',
+    ]
+    return '\n'.join(lines)
+
+
+def task_queue(plan):
+    """Explicit request-to-capability mapping. Never label unsupported work as done."""
+    tasks=[]
+    def add(label, supported, detail):tasks.append({'label':label,'supported':supported,'detail':detail})
+    if plan.get('focus_kills'):add('Find and prioritize zombie kills',False,'Requires Project Zomboid event recognition; not yet available')
+    if plan.get('focus_loot'):add('Find and prioritize looting',False,'Requires inventory/loot event recognition; not yet available')
+    if plan.get('intro_seconds'):add(f"Assemble {plan['intro_seconds']}-second action-candidate intro",True,'Uses activity candidates; verify kills manually')
+    if plan.get('target_seconds'):add(f"Target {plan['target_seconds']:g} seconds",True,'Activity-based selection with an approximate duration target')
+    if plan.get('remove_stagnant'):add('Remove stagnant/loading footage',True,'Available in current Auto Edit analysis')
+    if plan.get('speedup'):add('Speed up low-activity footage',plan.get('mode')=='longform','Available for long-form at 2×')
+    if plan.get('effects'):add('Place visual effects at candidate action cuts',True,'Automatic placement is not kill-aware')
+    if plan.get('music'):add('Add background music',False,'Choose a music file in the edit preview; sound effects are not music')
+    if plan.get('sounds'):add('Place built-in sound cues at candidate cuts',True,'No copyrighted rock music included; cues are not event-aware')
+    if plan.get('fade_transition'):add('Fade into gameplay',True,'Short clip fades are supported; exact intro-to-main transition needs intro assembly')
+    if plan.get('captions'):add('Generate captions',False,'Speech transcription is not yet integrated')
+    return tasks
+
+def task_report(plan):
+    tasks=task_queue(plan)
+    if not tasks:return 'No actionable tasks detected. Describe the edits you want.'
+    return '\n'.join(('READY' if t['supported'] else 'NOT IMPLEMENTED')+' | '+t['label']+' — '+t['detail'] for t in tasks)

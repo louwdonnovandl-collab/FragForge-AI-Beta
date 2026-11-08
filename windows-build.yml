@@ -1,0 +1,48 @@
+name: Build FragForge Windows v0.5.1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Download FFmpeg tools
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-files
+          foreach ($name in @('ffmpeg.exe', 'ffprobe.exe')) {
+            $file = Get-ChildItem ffmpeg-files -Filter $name -Recurse -File | Select-Object -First 1
+            if (!$file) { throw "Missing $name" }
+            Copy-Item $file.FullName $name
+          }
+      - name: Build Windows executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name FragForge --collect-all PySide6 --collect-submodules fragforge --add-binary 'ffmpeg.exe;.' --add-binary 'ffprobe.exe;.' launcher.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package application
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'dist/FragForge/FragForge.exe')) { throw 'FragForge.exe missing' }
+          Compress-Archive -Path 'dist/FragForge/*' -DestinationPath 'FragForge-Windows-v0.5.1.zip' -Force
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FragForge-Windows-v0.5.1
+          path: FragForge-Windows-v0.5.1.zip
+          if-no-files-found: error

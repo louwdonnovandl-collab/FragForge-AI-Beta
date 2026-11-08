@@ -1,0 +1,20 @@
+name: Test Mr Director fallback
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'director_plan_fallback.py'
+      - 'tests/test_director_plan_fallback.py'
+      - '.github/workflows/director-fallback-tests.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test fallback logic
+        run: python -m unittest discover -s tests -p test_director_plan_fallback.py -v
