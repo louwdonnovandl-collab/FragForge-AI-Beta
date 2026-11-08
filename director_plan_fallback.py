@@ -52,7 +52,7 @@ def _validate(data):
 
 def _ollama(prompt, endpoint, model, timeout):
     payload = json.dumps({'model': model, 'prompt': prompt, 'stream': False,
-                          'format': 'json', 'think': False, 'options': {'temperature': 0.1, 'num_predict': 350, 'num_ctx': 2048}}).encode('utf-8')
+                          'format': 'json', 'think': False, 'keep_alive': 0, 'options': {'temperature': 0.1, 'num_predict': 350, 'num_ctx': 2048}}).encode('utf-8')
     req = urllib.request.Request(endpoint, data=payload,
                                  headers={'Content-Type': 'application/json'}, method='POST')
     with urllib.request.urlopen(req, timeout=timeout) as response:

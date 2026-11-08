@@ -13,6 +13,8 @@ from director_executor import runtime, select_runtime, intro_candidates, intro_f
 from version import DISPLAY_NAME
 from vision_director import installed_models, scan as vision_scan, combat_windows
 from audio_director import scan_audio, corroborate_vision
+from recognition_markers import build_markers, director_report, export_report
+from music_intelligence import scan_library, choose_track, genre_for_request
 from auto_editor import find_scene_changes, choose_highlights, full_length_segments, detect_stagnant_ranges, keep_ranges_after_removal, analyze_motion_profile, smart_pacing_segments
 
 BG='#0b1019'; PANEL='#142131'; CARD='#1c2c3e'; FG='#dceaf6'; CYAN='#25e2df'; BORDER='#2d4860'
@@ -405,7 +407,7 @@ class Editor(QMainWindow):
         root=QWidget();self.setCentralWidget(root);main=QVBoxLayout(root);main.setContentsMargins(8,8,8,8);main.setSpacing(8)
         header=QHBoxLayout();main.addLayout(header)
         logo=QLabel('◈  FRAGFORGE AI');logo.setStyleSheet(f'font-size:21px;font-weight:800;color:{CYAN};');header.addWidget(logo)
-        header.addWidget(QLabel('VIDEO EDITOR  v0.10.29 · Mr Director'));header.addStretch()
+        header.addWidget(QLabel('VIDEO EDITOR · FF_050 Beta.1 · Mr Director'));header.addStretch()
         for name in ['Project','Edit','Effects','Sounds','Transitions','Titles','AI Tools']:
             b=self.button(name,lambda checked=False, n=name:self.open_feature(n));header.addWidget(b)
         header.addWidget(self.button('↶ Undo',lambda checked=False:self.undo()))
@@ -971,14 +973,30 @@ class Editor(QMainWindow):
         music_library_status=QLabel('Music library: no folder selected (up to 50 local tracks)')
         settings_layout.addWidget(music_library_status)
         music_library_tracks=[]
+        music_request=QLineEdit();music_request.setPlaceholderText('Describe genre or enter exact song title (e.g. dark survival, metal, epic)')
+        settings_layout.addWidget(music_request)
+        music_selection=QLabel('Mr Director: no track selected')
+        settings_layout.addWidget(music_selection)
+        def select_requested_music():
+            if not music_library_tracks:
+                QMessageBox.information(dlg,'Music library','Choose a music library folder first.');return
+            choice=choose_track(music_library_tracks,music_request.text() or (pending or {}).get('music',''))
+            if choice:
+                music_path.setText(str(choice['path']))
+                music_selection.setText(f'Mr Director selected: {choice["title"]} · {choice["genre"]} · {choice["reason"]}')
+        settings_layout.addWidget(self.button('Mr Director — Select requested track',lambda checked=False:select_requested_music()))
         def choose_music_library():
             folder=QFileDialog.getExistingDirectory(dlg,'Choose licensed music folder',str(Path.home()))
             if not folder:return
             extensions={'.mp3','.wav','.flac','.m4a','.ogg','.aac'}
-            tracks=sorted((p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in extensions),key=lambda p:p.name.lower())[:50]
+            tracks=[item['path'] for item in scan_library(folder,limit=50)]
             music_library_tracks.clear();music_library_tracks.extend(tracks)
             music_library_status.setText(f'Music library: {len(tracks)} tracks found (maximum 50)')
-            if tracks and not music_path.text().strip():music_path.setText(str(tracks[0]))
+            if tracks and not music_path.text().strip():
+                choice=choose_track(tracks,music_request.text() or str((pending or {}).get('music','')))
+                if choice:
+                    music_path.setText(str(choice['path']))
+                    music_selection.setText(f'Mr Director selected: {choice["title"]} · {choice["genre"]}')
         library_button.clicked.connect(lambda checked=False:choose_music_library())
 
         settings_layout=collapsible_section('03  Combat detection & review', True)
@@ -1025,6 +1043,17 @@ class Editor(QMainWindow):
                 QMessageBox.information(dlg,'Vision AI','The model download terminal has opened. Wait for a successful completion message, then click Analyze video.')
             except Exception as exc:QMessageBox.warning(dlg,'Vision AI',str(exc))
         install_vision.clicked.connect(lambda checked=False:install_model())
+        def release_ai_memory():
+            from ollama_memory import release_models
+            models=[vision_model.currentText().strip(), 'qwen3:4b']
+            results=release_models(models)
+            details='\n'.join(f'{name}: {"unload requested" if ok else msg}' for name,(ok,msg) in results.items())
+            QMessageBox.information(dlg,'Release AI Memory',details or 'No models selected')
+        release_button=self.button('Release AI Memory (Ollama)',lambda:None)
+        release_button.setToolTip('Unload the selected vision model and the FragForge planning model. Do not use during active analysis.')
+        release_button.clicked.connect(lambda checked=False:release_ai_memory())
+        settings_layout.addWidget(release_button)
+
         audio_enabled=QCheckBox('Analyze game audio for impacts and sudden loud events (local, no extra model)')
         audio_enabled.setChecked(True)
         settings_layout.addWidget(audio_enabled)
@@ -1076,11 +1105,12 @@ class Editor(QMainWindow):
         controls=QHBoxLayout();layout.addLayout(controls)
         analyze=self.button('Analyze video',lambda:None,True)
         apply=self.button('Apply selected edit',lambda:None);apply.setEnabled(False)
+        markers_button=self.button('Review AI markers',lambda:None);markers_button.setEnabled(False)
         cancel_button=self.button('Cancel analysis',lambda:None);cancel_button.setEnabled(False)
         back_button=self.button('← Back to Assistant',lambda checked=False:None) if from_assistant else None
         if back_button:controls.addWidget(back_button)
-        controls.addWidget(analyze);controls.addWidget(cancel_button);controls.addWidget(apply)
-        state={'cuts':None,'windows':[],'segments':[],'intro':[],'cues':[],'vision':None}
+        controls.addWidget(analyze);controls.addWidget(cancel_button);controls.addWidget(markers_button);controls.addWidget(apply)
+        state={'cuts':None,'windows':[],'segments':[],'intro':[],'cues':[],'vision':None,'markers':[]}
         start=float(source.get('start',0));end=float(source.get('end',0))
         full_duration,_=probe(source['path'])
         full_end=min(float(full_duration),3600.)
@@ -1184,11 +1214,11 @@ class Editor(QMainWindow):
         def tick_analysis():
             elapsed=int(time.monotonic()-activity['started'])
             if analysis_bar.maximum()!=0 and elapsed>=4 and time.monotonic()-activity['last_update']>=4:
-                analysis_bar.setRange(0,0)  # busy indicator, NOT a fabricated percentage
+                analysis_bar.setRange(0,100)  # hold real completed percentage; never animate fictitious progress
             if analyze.isEnabled():
                 heartbeat.stop();return
             status.setText(f"{activity['stage']} · {elapsed}s elapsed" +
-                           (' · working (no progress timestamps yet)' if analysis_bar.maximum()==0 else ''))
+                           (' · waiting for processing update' if time.monotonic()-activity['last_update']>=10 else ''))
         heartbeat.timeout.connect(tick_analysis)
         def invalidate_analysis(*args):
             if state['cuts'] is not None:
@@ -1202,6 +1232,29 @@ class Editor(QMainWindow):
         allow_unverified.toggled.connect(invalidate_analysis)
         vision_enabled.toggled.connect(invalidate_analysis)
         audio_enabled.toggled.connect(invalidate_analysis)
+        def review_recognition_markers():
+            markers=state.get('markers',[])
+            if not markers:
+                QMessageBox.information(dlg,'Mr Director — Recognition','No recognition markers yet. Enable vision or audio scanning and analyze the video first.')
+                return
+            report=director_report(markers)
+            review=QDialog(dlg);review.setWindowTitle('Mr Director — Recognition markers');review.resize(740,520)
+            review_layout=QVBoxLayout(review)
+            review_text=QPlainTextEdit();review_text.setReadOnly(True);review_text.setPlainText(report)
+            review_layout.addWidget(review_text)
+            save_button=self.button('Export marker JSON for review',lambda:None)
+            def save_markers():
+                dest,_=QFileDialog.getSaveFileName(review,'Export AI recognition markers','FragForge_recognition_markers.json','JSON files (*.json)')
+                if dest:
+                    try:
+                        export_report(dest,source['path'],vision_model.currentText(),markers)
+                        QMessageBox.information(review,'Markers exported','Recognition markers saved. These are unverified labels; no AI model has been trained.')
+                    except Exception as exc:
+                        QMessageBox.warning(review,'Export failed',str(exc))
+            save_button.clicked.connect(save_markers)
+            review_layout.addWidget(save_button)
+            review.exec()
+        markers_button.clicked.connect(review_recognition_markers)
         def after_visual_scan(cuts):
             if not vision_enabled.isChecked():
                 state['vision']=None;analyzed(cuts);return
@@ -1217,6 +1270,8 @@ class Editor(QMainWindow):
             worker.progress.connect(lambda pct:(analysis_bar.setValue(pct),activity.update(last_update=time.monotonic(),stage=f'Vision scan {pct}% — sampled frames, not verified kills')))
             def done(result):
                 state['vision']=result
+                state['markers']=build_markers(result.get('samples',[]),result.get('audio',{}).get('events',[]))
+                markers_button.setEnabled(bool(state['markers']))
                 analyzed(cuts)
                 hits=combat_windows(result['samples'],full_end)
                 if result.get('audio'):status.setToolTip(result['audio'].get('status',''))
@@ -1231,7 +1286,7 @@ class Editor(QMainWindow):
             worker.start()
 
         def run_analysis():
-            analyze.setEnabled(False);apply.setEnabled(False);cancel_button.setEnabled(True);analysis_bar.setRange(0,100);analysis_bar.setValue(0)
+            analyze.setEnabled(False);apply.setEnabled(False);markers_button.setEnabled(False);state['markers']=[];cancel_button.setEnabled(True);analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             activity.update(started=time.monotonic(),last_update=time.monotonic(),last_pct=0,stage='Starting analysis')
             status.setText('Launching FFmpeg scene analysis…')
             heartbeat.start()
@@ -1244,7 +1299,7 @@ class Editor(QMainWindow):
                 activity['stage']=message.rstrip('…')
                 activity['last_update']=time.monotonic()
                 if message.startswith('Detecting scene changes'):
-                    analysis_bar.setRange(0,0)
+                    analysis_bar.setRange(0,100)
                 elif message.startswith('Scanning'):
                     analysis_bar.setRange(0,100)
                 elif message.startswith('Analysis complete'):
@@ -1275,8 +1330,14 @@ class Editor(QMainWindow):
                     'The supplied timestamps did not produce usable clips. Check the timestamps and analyze again.')
                 return
             if pending and pending.get('music') and not music_path.text().strip():
-                QMessageBox.warning(dlg,'Music required','You requested background music. Choose an audio file before applying the edit.')
-                return
+                choice=QMessageBox(dlg)
+                choice.setWindowTitle('Mr Director — Music not selected')
+                choice.setText('You requested background music, but no track is selected.')
+                choice.setInformativeText('Apply without music, or return to choose a track?')
+                continue_button=choice.addButton('Apply without music',QMessageBox.AcceptRole)
+                choice.addButton('Choose music',QMessageBox.RejectRole)
+                choice.exec()
+                if choice.clickedButton()!=continue_button:return
             previous_clips=copy.deepcopy(self.clips)
             if replace.isChecked():
                 confirmation=QMessageBox.question(dlg,'Replace Timeline',
@@ -1375,9 +1436,6 @@ class Editor(QMainWindow):
             if requested and actual_total>requested+tolerance:
                 failures.append(f'Full timeline exceeds target: {actual_total:.2f}s > {requested:.2f}s')
 
-            if pending and pending.get('music') and not any(
-                    c.get('label','').startswith('Director background music') for c in self.clips):
-                failures.append('Requested background music was not added')
             if not failures and shorter:
                 choice=QMessageBox(dlg)
                 choice.setWindowTitle('Mr Director — Review shorter edit')

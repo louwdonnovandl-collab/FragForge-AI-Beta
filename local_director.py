@@ -48,7 +48,7 @@ def _options(limit=240, temperature=.3):
 
 def _generate(prompt, model, limit=240, json_mode=False):
     payload = {'model': model, 'prompt': prompt, 'stream': False,
-               'think': False, 'options': _options(limit)}
+               'think': False, 'keep_alive': 0, 'options': _options(limit)}
     if json_mode:
         payload['format'] = 'json'
     return clean_reply(_post('/api/generate', payload, timeout=120).get('response', ''))
@@ -136,7 +136,7 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
             messages.append({'role': 'assistant', 'content': entry[13:][:350]})
     messages.append({'role': 'user', 'content': '/no_think\n' + message[:1000]})
     payload = {'model': model, 'messages': messages, 'stream': False,
-               'think': False, 'options': _options(300, .45)}
+               'think': False, 'keep_alive': 0, 'options': _options(300, .45)}
     errors = []
     try:
         result = _post('/api/chat', payload, timeout=90)

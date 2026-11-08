@@ -54,7 +54,7 @@ def classify_frame(path,seconds,model):
             'Return a JSON object with keys event and confidence (number 0 to 1).')
     frame=extract_frame(path,seconds)
     base={'model':model,'prompt':prompt,'images':[frame], 'stream':False,
-          'think':False,'format':'json'}
+          'think':False,'format':'json','keep_alive':'30s'}
     errors=[]
     # Retry once with a larger budget when the model consumes all output on reasoning.
     # The second request is not a claim that reasoning was disabled.
@@ -72,7 +72,15 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=48):
     # 48 frames across a 47-minute source is only a coarse first pass.
     count=max(1,min(max_frames,int(end/12)+1))
     samples=[min(end-0.2,(i+.5)*end/count) for i in range(count)]
+    try:
+        return _scan_samples(path, samples, model, progress, cancel)
+    finally:
+        from ollama_memory import release_model
+        release_model(model)
+
+def _scan_samples(path, samples, model, progress=None, cancel=None):
     found=[];errors=[]
+    count=len(samples)
     for i,t in enumerate(samples):
         if cancel is not None and cancel.is_set():raise RuntimeError('Vision scan cancelled')
         try:found.append(classify_frame(path,t,model))
