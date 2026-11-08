@@ -1,8 +1,8 @@
 """FragForge 0.10.1: Qt multi-track editing workspace (preview uses source player)."""
 import copy, math, os, sys, json, subprocess, struct, threading, re, time
 from pathlib import Path
-from PySide6.QtCore import Qt, QUrl, Signal, QThread, QTimer, QRectF, QMimeData, QObject, QEvent
-from PySide6.QtGui import QColor, QPen, QBrush, QFont, QShortcut, QKeySequence, QPainter, QDrag, QPixmap, QImage, QIcon
+from PySide6.QtCore import Qt, QUrl, Signal, QThread, QTimer, QRectF, QMimeData, QObject, QEvent, QSize
+from PySide6.QtGui import QColor, QPen, QBrush, QFont, QShortcut, QKeySequence, QPainter, QDrag, QPixmap, QImage, QIcon, QMovie
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QPushButton,QLabel,QListWidget,QFileDialog,QMessageBox,QSplitter,QGraphicsView,QGraphicsScene,QSlider,QFrame,QInputDialog,QDoubleSpinBox,QScrollArea,QTabWidget,QProgressBar,QComboBox,QToolButton, QAbstractItemView, QCheckBox, QSizePolicy, QLayout, QDialog, QLineEdit, QPlainTextEdit, QListWidgetItem, QStackedLayout)
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QMediaDevices,QSoundEffect,QVideoSink
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -755,7 +755,7 @@ class Editor(QMainWindow):
         assistant_tabs=QTabWidget(dlg)
         assistant_area.addWidget(assistant_tabs)
         director_page=QWidget();right=QVBoxLayout(director_page);right.setSpacing(9)
-        assistant_tabs.addTab(director_page,'Mr Director')
+        assistant_tabs.addTab(director_page,'Editor-X')
         preview_page=QWidget();preview_layout=QVBoxLayout(preview_page)
         preview_layout.addWidget(QLabel('Review proposed edits before applying changes.'))
         preview_open=self.button('Open Edit Preview',lambda checked=False:self.open_auto_editor(from_assistant=True))
@@ -765,7 +765,7 @@ class Editor(QMainWindow):
         ai_mode_page=QWidget();mode_layout=QVBoxLayout(ai_mode_page)
         mode_layout.addWidget(QLabel('AI performance — memory budgets are targets, not hard caps.'))
         performance_mode=QComboBox();performance_mode.addItems(['Eco','Balanced','Accelerated'])
-        performance_mode.setCurrentText(getattr(self,'_ai_performance_mode','Balanced'))
+        performance_mode.setCurrentText(getattr(self,'_ai_performance_mode','Accelerated'))
         mode_layout.addWidget(performance_mode)
         profile_description=QLabel();profile_description.setWordWrap(True)
         mode_layout.addWidget(profile_description)
@@ -803,7 +803,7 @@ class Editor(QMainWindow):
         refresh_button.clicked.connect(lambda checked=False:refresh_ai())
         mode_layout.addStretch(1)
         assistant_tabs.addTab(ai_mode_page,'AI Mode')
-        heading=QLabel('MR DIRECTOR  •  YOUR AI EDITING PARTNER')
+        heading=QLabel('EDITOR-X  •  YOUR AI EDITING PARTNER')
         heading.setStyleSheet('font-size:17px; font-weight:600; color:#25e2df;')
         right.addWidget(heading)
         row=QHBoxLayout();right.addLayout(row)
@@ -986,7 +986,7 @@ class Editor(QMainWindow):
         # A modeless child avoids a nested event loop that previously blocked the chat.
         parent_dialog=getattr(self,'_director_dialog',None) if from_assistant else None
         dlg=QDialog(parent_dialog if parent_dialog is not None else self)
-        dlg.setWindowTitle('FragForge AI — Mr Director is Working');dlg.resize(760,530)
+        dlg.setWindowTitle('FragForge AI — Editor-X is Working');dlg.resize(760,530)
         if from_assistant:
             dlg.setWindowModality(Qt.NonModal)
             dlg.setAttribute(Qt.WA_DeleteOnClose,True)
@@ -1017,16 +1017,28 @@ class Editor(QMainWindow):
         work_page=QWidget(dlg)
         work_layout=QVBoxLayout(work_page)
         work_layout.setAlignment(Qt.AlignCenter)
-        working_art=QLabel('✍  MR DIRECTOR  ✍')
+        # Native Qt animated GIF: lightweight and independent of Ollama workers.
+        working_art=QLabel('EDITOR-X')
         working_art.setAlignment(Qt.AlignCenter)
-        working_art.setStyleSheet('font-size:28px; color:#25e2df; font-weight:700;')
+        working_art.setStyleSheet('font-size:20px; color:#25e2df; font-weight:700; background:transparent;')
         work_layout.addWidget(working_art)
         avatar_picture=QLabel()
         avatar_picture.setAlignment(Qt.AlignCenter)
-        avatar_file=Path(__file__).resolve().parent/'assets'/'mr_director.png'
+        avatar_picture.setStyleSheet('background:transparent; border:none;')
+        avatar_picture.setMinimumHeight(250)
+        avatar_file=Path(__file__).resolve().parent/'assets'/'editor_x_working.gif'
         if avatar_file.is_file():
-            avatar_picture.setPixmap(QPixmap(str(avatar_file)).scaled(190,190,Qt.KeepAspectRatio,Qt.SmoothTransformation))
-            work_layout.addWidget(avatar_picture)
+            editor_movie=QMovie(str(avatar_file), parent=dlg)
+            editor_movie.setCacheMode(QMovie.CacheAll)
+            editor_movie.setScaledSize(QSize(330,327))
+            avatar_picture.setMovie(editor_movie)
+            editor_movie.start()
+            dlg._editor_x_movie=editor_movie
+        else:
+            avatar_file=Path(__file__).resolve().parent/'assets'/'mr_director.png'
+            if avatar_file.is_file():
+                avatar_picture.setPixmap(QPixmap(str(avatar_file)).scaled(300,300,Qt.KeepAspectRatio,Qt.SmoothTransformation))
+        work_layout.addWidget(avatar_picture, 0, Qt.AlignHCenter)
         work_message=QLabel('Please wait, I am busy working on your video!')
         work_message.setAlignment(Qt.AlignCenter)
         work_message.setWordWrap(True)
@@ -1041,19 +1053,10 @@ class Editor(QMainWindow):
         work_bar.setFormat('%p%')
         work_layout.addWidget(work_bar)
         work_layout.addStretch(1)
-        editor_tabs.addTab(work_page,'Mr Director Working')
+        editor_tabs.addTab(work_page,'Editor-X Working')
         editor_tabs.addTab(scroll,'Edit Details')
         layout.addWidget(editor_tabs,1)
         scroll.setWidget(form)
-        # Small pen animation uses Qt timer; it does not load another AI model.
-        pen_frames=['✍  MR DIRECTOR  ·','✍  MR DIRECTOR  ··','✍  MR DIRECTOR  ···','✍  MR DIRECTOR']
-        pen_state={'i':0}
-        pen_timer=QTimer(dlg)
-        def animate_pen():
-            pen_state['i']=(pen_state['i']+1)%len(pen_frames)
-            working_art.setText(pen_frames[pen_state['i']])
-        pen_timer.timeout.connect(animate_pen)
-        pen_timer.start(280)
         # All settings/results live inside the scroll pane; buttons stay pinned.
         settings_layout=form_layout
         def collapsible_section(title, expanded=False):
@@ -1429,7 +1432,7 @@ class Editor(QMainWindow):
             status.setText('Vision AI scanning sampled gameplay frames…')
             analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             worker=VisionScanWorker(source['path'],full_end,model,audio_enabled.isChecked())
-            worker.profile=getattr(self,'_ai_performance_mode','Balanced')
+            worker.profile=getattr(self,'_ai_performance_mode','Accelerated')
             self._vision_scan_worker=worker
             worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))
             def done(result):
