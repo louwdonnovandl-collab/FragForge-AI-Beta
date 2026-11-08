@@ -1,4 +1,4 @@
-"""Reliable local Ollama communication for Editor-X (no cloud API required)."""
+"""Reliable local Ollama communication for Eli Studio (no cloud API required)."""
 import json
 import re
 import urllib.error
@@ -123,8 +123,8 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
     from editor_x_brain import parse_instruction, describe_intent
     intent=parse_instruction(message)
     system=(
-        'You are Editor-X, the integrated AI video editor inside FragForge. '
-        'You CAN plan and apply edits through the FragForge editor after user approval. '
+        'You are Eli, the integrated AI video editor inside Eli Studio. '
+        'You can plan edits; the editor applies them only after user approval. '
         'Send Message is conversation only; Prepare Edit starts analysis. '
         'The current V1 timeline is the source of truth; preserve existing edits by default. '
         'Follow the latest user instruction; older requests are context, not restrictions. '
@@ -133,31 +133,35 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
         'Never invent music tracks, video observations, or completed changes. '
         'Do not claim to recognize an event without video-analysis evidence. '
         'Keep answers concise and helpful; explain the intended change and ask the user '
-        'to use Prepare Edit. No markdown tables. /no_think'
+        'to use Prepare Edit. Answer in one or two short sentences. No markdown tables.'
     )
     messages=[{'role':'system','content':system}]
     for entry in (history or [])[-6:]:
         if isinstance(entry,str) and entry.startswith('You: '):
             messages.append({'role':'user','content':entry[5:][:500]})
-        elif isinstance(entry,str) and entry.startswith('Editor-X: '):
-            messages.append({'role':'assistant','content':entry[10:][:500]})
+        elif isinstance(entry,str) and entry.startswith(('Eli: ','Editor-X: ')):
+            messages.append({'role':'assistant','content':entry.split(': ',1)[1][:500]})
     messages.append({'role':'user','content':message[:2500]})
     errors=[]
     chosen_model=DEFAULT_MODEL if DEFAULT_MODEL in available_models_safe() else model
     for endpoint in ('/api/chat','/api/generate'):
         try:
             payload={'model':chosen_model,'stream':False,'think':True,
-                     'keep_alive':0,'options':_options(240,.35)}
+                     'keep_alive':0,'options':_options(1024,.35)}
             if endpoint=='/api/chat':payload['messages']=messages
             else:payload['prompt']=system+'\nUser: '+message[:1500]+'\nEditor-X:'
             data=_post(endpoint,payload,timeout=150)
             raw=(data.get('message') or {}).get('content','') if endpoint=='/api/chat' else data.get('response','')
             answer=clean_reply(raw)
-            if answer:return answer[:5000]
+            if answer:
+                # Keep reasoning private; display only the final answer.
+                answer=re.sub(r'\s+', ' ', answer).strip()
+                sentences=re.split(r'(?<=[.!?])\s+',answer)
+                return ' '.join(sentences[:2])[:380]
             errors.append(endpoint+': empty visible response; done_reason='+str(data.get('done_reason')))
         except Exception as exc:errors.append(endpoint+': '+str(exc)[:220])
     # Offline response is clearly a proposal, never a claim that footage was analyzed.
-    return describe_intent(intent)+' [Local AI unavailable: '+(' | '.join(errors))[:260]+']'
+    return describe_intent(intent)[:300]
 
 
 def available_models_safe():
