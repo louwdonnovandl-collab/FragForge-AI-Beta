@@ -2,7 +2,7 @@
 import base64, json, re, subprocess, urllib.request
 from pathlib import Path
 from media import binary
-from ai_runtime import PROFILES, ollama_ram_gb
+from ai_runtime import PROFILES, ollama_ram_gb, MemoryBudgetGuard
 
 HOST='http://127.0.0.1:11434'
 
@@ -83,16 +83,20 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,profile="Balan
 def _scan_samples(path, samples, model, progress=None, cancel=None, profile="Balanced"):
     found=[];errors=[]
     count=len(samples)
+    guard = MemoryBudgetGuard(profile)
     for i,t in enumerate(samples):
         ram = ollama_ram_gb()
-        budget = PROFILES[profile]['budget_gb']
-        if ram is not None and ram > budget:
-            raise RuntimeError(f'AI memory safety stop: llama-server uses {ram:.1f} GB, above the {profile} {budget} GB target. Lower context or switch mode.')
+        warning = guard.check(ram)
+        if warning:
+            raise RuntimeError(warning)
         if cancel is not None and cancel.is_set():raise RuntimeError('Vision scan cancelled')
         try:found.append(classify_frame(path,t,model,profile))
         except Exception as exc:
             errors.append(str(exc))
             if len(errors)>=3 and not found:raise RuntimeError('Vision scan unavailable: '+errors[-1]+'; try a different vision model such as llava:7b')
+        warning = guard.check(ollama_ram_gb())
+        if warning:
+            raise RuntimeError(warning)
         if progress:progress(i+1,count)
     return {'samples':found,'errors':errors[:3],'failed_frames':len(errors),'model':model}
 

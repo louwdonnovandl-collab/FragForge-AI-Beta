@@ -15,17 +15,19 @@ def available_models(timeout=4):
 
 
 def clean_reply(value):
-    """Remove Qwen thinking tokens even on Ollama versions ignoring think=false."""
-    value = re.sub(r'<think>.*?</think>', '', str(value), flags=re.I | re.S)
-    if '</think>' in value.lower():
-        value = re.split(r'</think>', value, flags=re.I)[-1]
-    value = re.sub(r'<\|(?:im_start|im_end|endoftext)\|>', '', value)
-    value = value.strip()
-    # Some Qwen3 runners expose untagged deliberation as ordinary content.
-    # Reject it instead of presenting private drafting text as Mr Director.
-    if re.search(r'(?im)^\s*(the user says|i must respond|possible response:|another idea:|this is 1 sentence|however, the user|we are in the context)\b', value):
+    """Extract the complete final answer, excluding reasoning when tagged."""
+    if value is None:
         return ''
-    return value
+    value = str(value)
+    # Some Ollama/Qwen versions put untagged reasoning before </think>.
+    if re.search(r'</think>', value, flags=re.I):
+        value = re.split(r'</think>', value, flags=re.I)[-1]
+    else:
+        value = re.sub(r'<think>.*?</think>', '', value, flags=re.I | re.S)
+        # An unfinished thinking section is not a user-visible answer.
+        value = re.sub(r'<think>.*$', '', value, flags=re.I | re.S)
+    value = re.sub(r'<\|(?:im_start|im_end|endoftext)\|>', '', value)
+    return value.strip()
 
 
 def _post(endpoint, payload, timeout=75):
@@ -48,7 +50,7 @@ def _options(limit=240, temperature=.3):
 
 def _generate(prompt, model, limit=240, json_mode=False):
     payload = {'model': model, 'prompt': prompt, 'stream': False,
-               'think': False, 'keep_alive': 0, 'options': _options(limit)}
+               'think': True, 'keep_alive': 0, 'options': _options(limit)}
     if json_mode:
         payload['format'] = 'json'
     return clean_reply(_post('/api/generate', payload, timeout=120).get('response', ''))
@@ -64,7 +66,7 @@ def make_plan(message, model=DEFAULT_MODEL, history=None):
         'focus_kills, focus_loot, fade_transition (booleans), intro_seconds (0-20), '
         'requested_speed (1-5), target_minutes (0-180), reply (brief, truthful). '
         'Never claim to have analyzed or edited video. Automatic kill recognition is unavailable. '
-        'Do not include thinking. /no_think\nInitial plan: ' + json.dumps(fallback) + '\nRecent chat: ' + context +
+        'Return only valid JSON in the final answer.\nInitial plan: ' + json.dumps(fallback) + '\nRecent chat: ' + context +
         '\nCurrent request: ' + message[:1800]
     )
     # Retry malformed/empty Ollama output, then preserve a usable rule-based plan.
@@ -124,7 +126,7 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
     """
     system = (
         'You are Mr Director, the friendly gaming-video assistant in FragForge. '
-        'Answer naturally in 1-3 short sentences. Do not show your reasoning. '
+        'Give a complete, useful answer. Keep internal reasoning separate from the final answer. '
         'Do not claim edits have been applied unless the editor confirms them. '
         'Automatic kill recognition is not yet available.'
     )
@@ -134,24 +136,24 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
             messages.append({'role': 'user', 'content': entry[5:][:350]})
         elif isinstance(entry, str) and entry.startswith('Mr Director: '):
             messages.append({'role': 'assistant', 'content': entry[13:][:350]})
-    messages.append({'role': 'user', 'content': '/no_think\n' + message[:1000]})
+    messages.append({'role': 'user', 'content': message[:2500]})
     payload = {'model': model, 'messages': messages, 'stream': False,
-               'think': False, 'keep_alive': 0, 'options': _options(300, .45)}
+               'think': True, 'keep_alive': 0, 'options': _options(1800, .45)}
     errors = []
     try:
-        result = _post('/api/chat', payload, timeout=90)
+        result = _post('/api/chat', payload, timeout=240)
         reply = clean_reply(result.get('message', {}).get('content', ''))
         if reply:
-            return reply[:1500]
+            return reply[:12000]
         errors.append('Chat endpoint returned no visible answer')
     except Exception as exc:
         errors.append(str(exc))
     # Some model/runner combinations behave better through /api/generate.
     try:
-        reply = _generate('/no_think\n' + system + '\nUser: ' + message[:700] +
-                          '\nMr Director:', model, 300)
+        reply = _generate(system + '\nUser: ' + message[:700] +
+                          '\nMr Director:', model, 1800)
         if reply:
-            return reply[:1500]
+            return reply[:12000]
         errors.append('Generate endpoint returned no visible answer')
     except Exception as exc:
         errors.append(str(exc))

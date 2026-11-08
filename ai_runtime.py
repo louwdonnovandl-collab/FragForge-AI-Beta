@@ -3,6 +3,7 @@
 Ollama is a shared local service: never spawn or kill its daemon from FragForge.
 """
 import threading
+import time
 
 PROFILES = {
     'Eco': {'budget_gb': 2, 'num_ctx': 1024, 'max_frames': 12, 'image_width': 320},
@@ -47,4 +48,36 @@ def ollama_ram_gb():
             if digits: total_kb += int(digits)
         return total_kb / (1024 * 1024)
     except Exception:
+        return None
+
+
+MEMORY_TOLERANCE = 0.10
+MEMORY_GRACE_SECONDS = 5.0
+
+class MemoryBudgetGuard:
+    """Graceful sampled guard, not an OS-enforced process memory cap."""
+    def __init__(self, profile, clock=None):
+        self.profile = profile
+        self.clock = clock or time.monotonic
+        self.over_since = None
+
+    @property
+    def ceiling_gb(self):
+        return PROFILES[self.profile]['budget_gb'] * (1 + MEMORY_TOLERANCE)
+
+    def check(self, ram_gb):
+        if ram_gb is None:
+            return None  # Monitoring unavailable; never pretend a limit is enforced.
+        if ram_gb <= self.ceiling_gb:
+            self.over_since = None
+            return None
+        now = self.clock()
+        if self.over_since is None:
+            self.over_since = now
+            return None
+        if now - self.over_since >= MEMORY_GRACE_SECONDS:
+            return (f'AI memory safety stop: llama-server used {ram_gb:.2f} GB, '
+                    f'above {self.profile} ceiling {self.ceiling_gb:.2f} GB '
+                    f'for at least {MEMORY_GRACE_SECONDS:g} seconds. '
+                    'Partial results should be preserved; choose a higher mode or reduce workload.')
         return None
