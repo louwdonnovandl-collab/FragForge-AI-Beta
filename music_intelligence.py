@@ -2,6 +2,7 @@
 Metadata is based on filenames and optional sidecar JSON; this is not acoustic genre recognition.
 """
 import json
+import secrets
 from pathlib import Path
 
 EXTENSIONS={'.mp3','.wav','.flac','.m4a','.ogg','.aac'}
@@ -48,6 +49,11 @@ def choose_track(tracks,request):
  for item in items:
   if item.get('version')==version and (cleaned==item['title'].lower() or cleaned==item['path'].name.lower() or cleaned==item['path'].stem.lower()):
    return dict(item,reason='exact requested track and version')
+ # Named song inside a longer editing instruction takes priority over genre randomization.
+ for item in items:
+  title=item['title'].lower().strip()
+  if item.get('version')==version and len(title)>=5 and title in request:
+   return dict(item,reason='named requested song and version')
  genre=genre_for_request(request)
  match=re.search(r'\b(?:track|song|number|#)\s*(\d{1,2})\b',request)
  if genre and match:
@@ -56,7 +62,7 @@ def choose_track(tracks,request):
   candidates.sort(key=lambda x:x['path'].name)
   if 1<=num<=len(candidates):return dict(candidates[num-1],reason='requested genre, number and version')
   return None
- if genre and not match and not any(x in request for x in ('track','song')):
+ if genre and not match:
   candidates=[x for x in items if x['genre']==genre and x.get('version')==version]
-  if candidates:return dict(candidates[0],reason='genre match; review before applying')
+  if candidates:return dict(secrets.choice(candidates),reason='random track from requested genre')
  return None

@@ -52,7 +52,7 @@ def describe_plan(p):
         f"Playback speed: {p['requested_speed']:g}× {'(explicitly requested)' if p.get('explicit_speed') else '(automatic pacing default)'}",
         'Visual effects: '+yes(p['effects']),
         'Sound effects: '+yes(p['sounds']),
-        'Background music: '+yes(p.get('music',False))+' (requires a selected audio track)',
+        'Background music: '+yes(p.get('music',False))+' (auto-select from bundled library when available)',
         'Captions/subtitles: '+yes(p['captions']),
         'Target output duration: '+(f"{p.get('target_seconds',0):g} seconds" if p.get('target_seconds') else 'Automatic') ,
         'Create intro: '+(str(p['intro_seconds'])+' seconds' if p['intro_seconds'] else 'Not requested'),
@@ -78,8 +78,8 @@ def task_queue(plan):
     if plan.get('remove_stagnant'):add('Remove stagnant/loading footage',True,'Available in current Auto Edit analysis')
     if plan.get('speedup'):add('Speed up low-activity footage',plan.get('mode')=='longform','Available for long-form at 2×')
     if plan.get('effects'):add('Place visual effects at candidate action cuts',True,'Automatic placement is not kill-aware')
-    if plan.get('music'):add('Add background music',False,'Choose a music file in the edit preview; sound effects are not music')
-    if plan.get('sounds'):add('Place built-in sound cues at candidate cuts',True,'No copyrighted rock music included; cues are not event-aware')
+    if plan.get('music'):add('Add background music',True,'Auto-select bundled music by requested genre; confirm actual export audio')
+    if plan.get('sounds'):add('Place built-in sound cues at candidate cuts',True,'Bundled original rock tracks are separate from transition sound effects')
     if plan.get('fade_transition'):add('Fade into gameplay',True,'Short clip fades are supported; exact intro-to-main transition needs intro assembly')
     if plan.get('captions'):add('Generate captions',False,'Speech transcription is not yet integrated')
     return tasks

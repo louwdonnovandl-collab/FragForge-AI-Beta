@@ -960,7 +960,7 @@ class Editor(QMainWindow):
         if not videos:
             QMessageBox.information(self,'Auto Edit','Place a gameplay video on V1 first.');return
         source=videos[0]
-        dlg=QDialog(self);dlg.setWindowTitle('FragForge AI — Director Edit Preview');dlg.resize(760,530)
+        dlg=QDialog(self);dlg.setWindowTitle('FragForge AI — Mr Director is Working');dlg.resize(760,530)
         original_reject=dlg.reject
         def safe_reject():
             if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):
@@ -1142,7 +1142,7 @@ class Editor(QMainWindow):
         settings_layout=collapsible_section('05  Apply & review', True)
         settings_layout.addWidget(replace)
         status=QLabel('Click Analyze to find potential edit points.');settings_layout.addWidget(status)
-        analysis_bar=QProgressBar();analysis_bar.setRange(0,100);analysis_bar.setValue(0);analysis_bar.setFormat('%p% — analysis progress')
+        analysis_bar=QProgressBar();analysis_bar.setRange(0,100);analysis_bar.setValue(0);analysis_bar.setFormat('%p%')
         settings_layout.addWidget(analysis_bar)
         def preset_changed(index):
             custom=(index==1)
@@ -1169,12 +1169,13 @@ class Editor(QMainWindow):
             target_duration.setValue(float(pending.get('target_seconds',pending.get('target_minutes',0)*60)))
             playback_speed.setValue(float(pending.get('requested_speed',1.5)))
             if pending.get('music'):
-                music_path.setPlaceholderText('Music requested — choose an audio file before applying')
+                music_request.setText('rock' if re.search(r'\brock\b',str(pending.get('original','')),re.I) else str(pending.get('original','')))
+                select_requested_music()
             intro_duration.setValue(float(pending.get('intro_seconds',0)))
             speedup.setChecked(pending['speedup'])
             effects.setChecked(pending['effects'])
             sounds.setChecked(pending['sounds'])
-            replace.setChecked(False)  # destructive replacement always requires explicit opt-in
+            replace.setChecked(True)  # Requested edit selected; timeline replacement still asks approval
             preset_changed(mode.currentIndex())
         results=QListWidget();results.setMinimumHeight(115);settings_layout.addWidget(results)
         controls=QHBoxLayout();layout.addLayout(controls)
@@ -1418,6 +1419,8 @@ class Editor(QMainWindow):
                     'The supplied timestamps did not produce usable clips. Check the timestamps and analyze again.')
                 return
             if pending and pending.get('music') and not music_path.text().strip():
+                select_requested_music()
+            if pending and pending.get('music') and not music_path.text().strip():
                 choice=QMessageBox(dlg)
                 choice.setWindowTitle('Mr Director — Music not selected')
                 choice.setText('You requested background music, but no track is selected.')
@@ -1475,13 +1478,14 @@ class Editor(QMainWindow):
                     chosen_music=music_path.text().strip()
                     music_length,_=probe(chosen_music)
                     if music_length<=0:raise ValueError('Music file has no valid duration')
+                    if not Path(chosen_music).is_file():raise FileNotFoundError(chosen_music)
                     at=0.
                     while at<position-.05:
                         take=min(music_length,position-at)
                         self.clips.append(dict(path=chosen_music,start=0.,end=take,at=at,
                                                track='A2',audio=True,kind='audio',speed=1.,
                                                effect='None',fade=min(.5,take/4),volume=.18,
-                                               label='Director background music — user selected'))
+                                               label='Mr Director background music — selected from requested genre'))
                         at+=take
                 except Exception as exc:errors.append('Background music: '+str(exc))
             # Add restrained accents only at measured activity peaks. These are
