@@ -52,7 +52,7 @@ def _validate(data):
 
 def _ollama(prompt, endpoint, model, timeout):
     payload = json.dumps({'model': model, 'prompt': prompt, 'stream': False,
-                          'format': 'json', 'options': {'temperature': 0.1}}).encode('utf-8')
+                          'format': 'json', 'think': False, 'options': {'temperature': 0.1, 'num_predict': 350, 'num_ctx': 2048}}).encode('utf-8')
     req = urllib.request.Request(endpoint, data=payload,
                                  headers={'Content-Type': 'application/json'}, method='POST')
     with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -86,9 +86,9 @@ def generate_director_plan(request, endpoint=ENDPOINT, model=MODEL, timeout=45):
     """Try full prompt, then concise retry, then return an offline fallback."""
     request = str(request or '').strip() or 'Create a gaming edit'
     prompts = [
-        'Return ONLY a JSON object with a nonempty steps array. Each step has an action string. '
+        '/no_think\nReturn ONLY a JSON object with a nonempty steps array. Each step has an action string. '
         'Do not claim to detect events without analyzing video. User request: ' + request,
-        'JSON only. Format: {"steps":[{"action":"analyze_media"},{"action":"suggest_cuts"}]}. '
+        '/no_think\nJSON only. Format: {"steps":[{"action":"analyze_media"},{"action":"suggest_cuts"}]}. '
         'Editing request: ' + request[:500],
     ]
     errors = []

@@ -51,7 +51,7 @@ def _generate(prompt, model, limit=240, json_mode=False):
                'think': False, 'options': _options(limit)}
     if json_mode:
         payload['format'] = 'json'
-    return clean_reply(_post('/api/generate', payload).get('response', ''))
+    return clean_reply(_post('/api/generate', payload, timeout=120).get('response', ''))
 
 
 def make_plan(message, model=DEFAULT_MODEL, history=None):
@@ -64,14 +64,14 @@ def make_plan(message, model=DEFAULT_MODEL, history=None):
         'focus_kills, focus_loot, fade_transition (booleans), intro_seconds (0-20), '
         'requested_speed (1-5), target_minutes (0-180), reply (brief, truthful). '
         'Never claim to have analyzed or edited video. Automatic kill recognition is unavailable. '
-        'Initial plan: ' + json.dumps(fallback) + '\nRecent chat: ' + context +
+        'Do not include thinking. /no_think\nInitial plan: ' + json.dumps(fallback) + '\nRecent chat: ' + context +
         '\nCurrent request: ' + message[:1800]
     )
     # Retry malformed/empty Ollama output, then preserve a usable rule-based plan.
     result = None
     errors = []
     for candidate in (prompt, 'Return ONLY a JSON object for this video editing request. '
-                      'Fields: mode, remove_stagnant, speedup, effects, sounds, captions, '
+                      '/no_think\nFields: mode, remove_stagnant, speedup, effects, sounds, captions, '
                       'focus_kills, focus_loot, fade_transition, intro_seconds, '
                       'requested_speed, target_minutes, reply. Request: ' + message[:700]):
         try:
@@ -89,7 +89,7 @@ def make_plan(message, model=DEFAULT_MODEL, history=None):
     if result is None:
         plan = dict(fallback)
         plan['source'] = 'fallback'
-        plan['warning'] = 'Local AI did not return a valid plan. Review the basic edit plan before running.'
+        plan['warning'] = 'Local AI plan unavailable: ' + ('; '.join(errors)[-400:] if errors else 'empty response') + '. Review the basic edit plan.'
         return plan, 'My local AI could not prepare a detailed plan, so I made a basic edit plan for your review.'
     plan = dict(fallback)
     for key in ('remove_stagnant', 'speedup', 'effects', 'sounds', 'captions',

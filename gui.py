@@ -1022,7 +1022,7 @@ class Editor(QMainWindow):
         settings_layout=collapsible_section('05  Apply & review', True)
         settings_layout.addWidget(replace)
         status=QLabel('Click Analyze to find potential edit points.');settings_layout.addWidget(status)
-        analysis_bar=QProgressBar();analysis_bar.setRange(0,100);analysis_bar.setValue(0)
+        analysis_bar=QProgressBar();analysis_bar.setRange(0,100);analysis_bar.setValue(0);analysis_bar.setFormat('%p% — analysis progress')
         settings_layout.addWidget(analysis_bar)
         def preset_changed(index):
             custom=(index==1)
@@ -1153,10 +1153,12 @@ class Editor(QMainWindow):
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
             analysis_bar.setValue(100);analyze.setEnabled(True);apply.setEnabled(bool(windows))
+            if not windows:
+                status.setText('Analysis finished but no valid clips were selected. Try allowing unverified footage, disabling combat-only focus, or changing the target duration; then reanalyze.')
         def failed(message):
             heartbeat.stop();cancel_button.setEnabled(False)
             analysis_bar.setRange(0,100)
-            status.setText('Analysis failed');analyze.setEnabled(True)
+            status.setText('Analysis failed — see error details');analyze.setEnabled(True);apply.setEnabled(False)
             QMessageBox.warning(dlg,'Auto Edit Analysis',message)
         # A UI heartbeat keeps the dialog visibly responsive even when FFmpeg
         # cannot provide timestamps (slow seeking, codec initialization, etc.).
@@ -1196,7 +1198,7 @@ class Editor(QMainWindow):
             analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             worker=VisionScanWorker(source['path'],full_end,model,audio_enabled.isChecked())
             self._vision_scan_worker=worker
-            worker.progress.connect(lambda pct:(analysis_bar.setValue(pct),status.setText(f'Vision scan {pct}% — sampled frames, not verified kills')))
+            worker.progress.connect(lambda pct:(analysis_bar.setValue(pct),activity.update(last_update=time.monotonic(),stage=f'Vision scan {pct}% — sampled frames, not verified kills')))
             def done(result):
                 state['vision']=result
                 analyzed(cuts)
@@ -1205,7 +1207,7 @@ class Editor(QMainWindow):
                 if result.get('failed_frames'):status.setToolTip((status.toolTip()+'\n' if status.toolTip() else '')+f'{result["failed_frames"]} vision frames failed classification')
                 if pending and pending.get('focus_kills') and not hits and not allow_unverified.isChecked() and not combat_markers.text().strip():
                     apply.setEnabled(False)
-                    status.setText('No credible combat candidates found. Add timestamps or allow unverified montage, then reanalyze.')
+                    status.setText('Vision scan complete, but no credible combat candidates found. To create a general highlight montage, check Allow unverified footage and click Analyze video again; or enter known combat timestamps.')
                 elif hits:
                     status.setText(status.text()+f' AI flagged {len(hits)} candidate combat frames; audio transients: {len(result.get("audio",{}).get("events",[]))}. Review before export.')
             worker.ready.connect(done)
