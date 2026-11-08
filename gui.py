@@ -1539,7 +1539,13 @@ class Editor(QMainWindow):
             for i,(part,a,b,rate) in enumerate(timeline):
                 clip=copy.deepcopy(source)
                 clip.update(start=a,end=b,at=position,track='V1',speed=rate)
-                clip['fade']=min(.3,(b-a)/max(rate,.1)/4) if (part=='intro' or state['segments']) else .0
+                # Short, bounded fades soften automatic montage boundaries without
+                # altering the requested final playback duration.
+                clip['fade']=min(.18, max(0., length_hint / 5.0)) if (length_hint := (b-a)/max(rate,.1)) > .35 else 0.
+                # Only AI-generated V1 clips receive automatic mix balancing.
+                # Manual timeline clips retain their user-selected levels.
+                if clip.get('audio'):
+                    clip['volume']=.42
                 clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Director edit — AI candidate, not verified kill')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
@@ -1555,7 +1561,7 @@ class Editor(QMainWindow):
                         cue_len=min(duration_sfx,max(.1,length-.1),1.5)
                         self.clips.append(dict(path=path,start=0.,end=cue_len,at=position+.05,
                                                track='A2',audio=True,kind='audio',speed=1.,
-                                               effect='None',fade=.05,volume=.28,
+                                               effect='None',fade=.12,volume=.40,
                                                label='Director transition cue — source cut'))
                         added_sfx+=1
                     except Exception as exc:errors.append('Transition sound: '+str(exc))
@@ -1571,7 +1577,7 @@ class Editor(QMainWindow):
                         take=min(music_length,position-at)
                         self.clips.append(dict(path=chosen_music,start=0.,end=take,at=at,
                                                track='A2',audio=True,kind='audio',speed=1.,
-                                               effect='None',fade=min(.5,take/4),volume=.18,
+                                               effect='None',fade=min(.75,take/4),volume=.24,
                                                label='Mr Director background music — selected from requested genre'))
                         at+=take
                 except Exception as exc:errors.append('Background music: '+str(exc))
@@ -1593,7 +1599,7 @@ class Editor(QMainWindow):
                         path=resolve_sound('board_024');sound_duration,_=probe(path)
                         self.clips.append(dict(path=path,start=0.,end=min(sound_duration,.75),
                                                at=output_time,track='A2',audio=True,kind='audio',
-                                               speed=1.,effect='None',fade=.05,volume=.22,
+                                               speed=1.,effect='None',fade=.12,volume=.34,
                                                label=f'Director activity cue — {reason} (unverified)'))
                         added_sfx+=1
                     except Exception as exc:errors.append('Activity sound: '+str(exc))
