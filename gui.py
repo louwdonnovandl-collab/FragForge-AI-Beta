@@ -800,11 +800,13 @@ class Editor(QMainWindow):
                 if not isinstance(result,str):
                     state['history'].clear()
                     state['requests'].clear()
-                    state['plan']=None
-                    state['plan_text']=''
+                    # Refreshing Ollama must not discard the user's edit request.
+                    saved_request=state.get('plan_text') or self._assistant_request
+                    state['plan']=interpret_request(saved_request) if saved_request else None
+                    state['plan_text']=saved_request
                     state['worker']=None
                     chat.setPlainText('Eli: Fresh conversation. Your video and timeline edits are preserved.')
-                    request.clear()
+                    request.setPlainText(state['plan_text'])
                     preview.clear()
                     reply_label.setText('Ready to work on the current V1 edit.')
                 if isinstance(result,str):refresh_status.setText('Refresh failed: '+result)
@@ -969,6 +971,9 @@ class Editor(QMainWindow):
                 self._assistant_request=value
                 state['plan']=interpret_request(value)
                 state['plan_text']=value
+            if not state['plan'] and (state.get('plan_text') or self._assistant_request):
+                saved=state.get('plan_text') or self._assistant_request
+                state['plan']=interpret_request(saved)
             if not state['plan']:
                 QMessageBox.information(dlg,'Prepare Edit','Describe the edit first, then click Prepare Edit.')
                 return
@@ -985,7 +990,7 @@ class Editor(QMainWindow):
                     self.open_auto_editor(auto_analyze=True,from_assistant=True)
                     assistant_tabs.setCurrentWidget(preview_page)
                 except Exception as exc:
-                    chat.appendPlainText('Eli: Unable to open edit preview: '+str(exc)+'\n')
+                    chat.appendPlainText('Eli: I could not open the preview. Please try again.\n')
                     QMessageBox.warning(dlg,'Edit preview failed',str(exc))
                 finally:
                     send.setEnabled(True)
@@ -1268,6 +1273,8 @@ class Editor(QMainWindow):
         pending=getattr(self,'_assistant_pending_plan',None)
         self._assistant_pending_plan=None
         if pending:
+            # Combat-only requests need verified markers or a vision scan;
+            # never substitute random activity and call it confirmed combat.
             vision_enabled.setChecked(bool(pending.get('focus_kills')))
             tasks=getattr(self,'_assistant_pending_tasks',[])
             if tasks:
@@ -1373,9 +1380,8 @@ class Editor(QMainWindow):
                     # Use full-source activity candidates when combat-only windows cannot fill the target.
                     peaks=[(t,1000.) for t in confirmed] if (focus and confirmed) else cuts.get('activity_peaks',[])
                     _,segments=precision_montage(base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
-                    if runtime(segments)+runtime(intro)<target_duration.value()-.15 and focus and confirmed:
-                        full_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
-                        _,segments=precision_montage(full_base,peaks+cuts.get('activity_peaks',[]),target_duration.value(),playback_speed.value(),runtime(intro))
+                    # Do not pad a combat-only request with unrelated footage.
+                    # A shorter honest edit is preferable to fabricated combat.
                     state['intro']=intro;state['segments']=segments
                     windows=[(a,b) for a,b,_ in segments]
                 else:
@@ -1678,8 +1684,9 @@ class Editor(QMainWindow):
         cancel_button.clicked.connect(lambda checked=False:cancel_analysis())
         analyze.clicked.connect(lambda checked=False:run_analysis())
         apply.clicked.connect(lambda checked=False:apply_edit())
-        for control in form.findChildren((QComboBox,QDoubleSpinBox)):
-            control.installEventFilter(wheel_guard)
+        for control_type in (QComboBox,QDoubleSpinBox):
+            for control in form.findChildren(control_type):
+                control.installEventFilter(wheel_guard)
         if auto_analyze:
             QTimer.singleShot(150,run_analysis)
         def cleanup_preview():

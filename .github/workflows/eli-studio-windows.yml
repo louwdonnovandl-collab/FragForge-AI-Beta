@@ -1,8 +1,6 @@
-name: Build Eli Studio v1.0.1 — Major Bug Fix
+name: Build Eli Studio v1.0.2 — Major Bug Fix
 on:
   workflow_dispatch:
-  push:
-    branches: [eli-studio-v1.0.0]
 permissions:
   contents: read
 jobs:
@@ -36,8 +34,8 @@ jobs:
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name EliStudio --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all PySide6 --add-data "assets;assets" --add-data "effects_assets;effects_assets" --add-data "music_library;music_library" launcher.py
       - name: Archive Windows app
         shell: pwsh
-        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.1.zip
+        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.2.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Eli_Studio_v1.0.1
-          path: Eli_Studio_v1.0.1.zip
+          name: Eli_Studio_v1.0.2
+          path: Eli_Studio_v1.0.2.zip
