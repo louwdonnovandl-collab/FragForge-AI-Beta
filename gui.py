@@ -733,16 +733,13 @@ class Editor(QMainWindow):
         self._position_director_peek()
 
         def hide_director():
-            if not dlg.isVisible():return
-            avatar.setEnabled(False)
-            def finish():
-                avatar.setEnabled(True)
-                if not dlg.isVisible():return
-                dlg.hide()
-                self._position_director_peek()
-                peek.show()
-                peek.raise_()
-            QTimer.singleShot(850,finish)
+            # Hide only on an explicit avatar click, never on Send/Prepare Edit.
+            if not dlg.isVisible():
+                return
+            dlg.hide()
+            self._position_director_peek()
+            peek.show()
+            peek.raise_()
 
         def show_director():
             peek.hide()
@@ -955,9 +952,26 @@ class Editor(QMainWindow):
                 return
             self._assistant_pending_plan=state['plan']
             self._assistant_pending_tasks=list(state['requests'])
-            peek.hide()
-            dlg.hide()
-            self.open_auto_editor(auto_analyze=True,from_assistant=True)
+            # The previous implementation hid the entire chat on every edit request.
+            # Keep it alive and visible; the edit preview is a separate modal dialog.
+            chat.appendPlainText('Mr Director: Opening edit analysis. Your chat will remain available after the preview closes.\n')
+            status.setText('● Preparing edit preview…')
+            send.setEnabled(False)
+            launch.setEnabled(False)
+            def open_requested_preview():
+                try:
+                    self.open_auto_editor(auto_analyze=True,from_assistant=True)
+                except Exception as exc:
+                    chat.appendPlainText('Mr Director: Unable to open edit preview: '+str(exc)+'\n')
+                    QMessageBox.warning(dlg,'Edit preview failed',str(exc))
+                finally:
+                    send.setEnabled(True)
+                    launch.setEnabled(True)
+                    status.setText('● Ready')
+                    if dlg.isVisible():
+                        dlg.raise_()
+                        dlg.activateWindow()
+            QTimer.singleShot(0,open_requested_preview)
         QTimer.singleShot(100,connect)
         dlg.show()
 
