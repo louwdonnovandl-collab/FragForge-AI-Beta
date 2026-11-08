@@ -407,8 +407,8 @@ class Editor(QMainWindow):
             QSplitter::handle{{background:#28445a;}}''')
         root=QWidget();self.setCentralWidget(root);main=QVBoxLayout(root);main.setContentsMargins(8,8,8,8);main.setSpacing(8)
         header=QHBoxLayout();main.addLayout(header)
-        logo=QLabel('◈  FRAGFORGE AI');logo.setStyleSheet(f'font-size:21px;font-weight:800;color:{CYAN};');header.addWidget(logo)
-        header.addWidget(QLabel('VIDEO EDITOR · FF_050 Beta.1 · Mr Director'));header.addStretch()
+        logo=QLabel('◈  ELI STUDIO');logo.setStyleSheet(f'font-size:21px;font-weight:800;color:{CYAN};');header.addWidget(logo)
+        header.addWidget(QLabel('VIDEO EDITOR · v1.0.0 · Eli'));header.addStretch()
         for name in ['Project','Edit','Effects','Sounds','Transitions','Titles','AI Tools']:
             b=self.button(name,lambda checked=False, n=name:self.open_feature(n));header.addWidget(b)
         header.addWidget(self.button('↶ Undo',lambda checked=False:self.undo()))
@@ -668,7 +668,7 @@ class Editor(QMainWindow):
             peek.raise_()
 
     def open_ai_assistant(self):
-        """Show the entire Mr Director chat window; hiding leaves only a half-head tab."""
+        """Show the entire Eli chat window; hiding leaves only a half-head tab."""
         from assistant_engine import interpret_request,describe_plan,task_queue,task_report
         from local_director import available_models,DEFAULT_MODEL
 
@@ -684,7 +684,7 @@ class Editor(QMainWindow):
         dlg=QDialog(self)
         dlg.setAttribute(Qt.WA_DeleteOnClose,False)
         self._director_dialog=dlg
-        dlg.setWindowTitle('Mr Director — '+DISPLAY_NAME)
+        dlg.setWindowTitle('Eli — '+DISPLAY_NAME)
         dlg.resize(980,680)
         dlg.setMinimumSize(760,540)
         dlg.setStyleSheet('QDialog {background:#0b1420; color:#e7f2fb;} QLabel {color:#dceaf6;} QPlainTextEdit {background:#111e2d; border:1px solid #294157; border-radius:9px; padding:9px; color:#f1f7fb;}')
@@ -694,7 +694,7 @@ class Editor(QMainWindow):
         left=QVBoxLayout()
         outer.addLayout(left,2)
         avatar=QPushButton()
-        avatar.setToolTip('Click Mr Director to hide this window')
+        avatar.setToolTip('Click Eli to hide this window')
         avatar.setStyleSheet('QPushButton {border:0; background:transparent; padding:0;}')
         avatar_path=os.path.join(os.path.dirname(__file__),'assets','mr_director.png')
         character=QPixmap(avatar_path)
@@ -702,10 +702,10 @@ class Editor(QMainWindow):
             avatar.setIcon(QIcon(character))
             avatar.setIconSize(character.size().scaled(300,375,Qt.KeepAspectRatio))
         else:
-            avatar.setText('Mr Director')
+            avatar.setText('Eli')
         avatar.setFixedHeight(380)
         left.addWidget(avatar)
-        reply_label=QLabel('Hey! I’m Mr Director. What are we creating today?')
+        reply_label=QLabel('Hey! I’m Eli. What are we creating today?')
         reply_label.setWordWrap(True)
         reply_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         reply_label.setStyleSheet('QLabel {background:#132838; border-left:3px solid #25e2df; border-radius:8px; padding:14px; font-size:14px;}')
@@ -717,7 +717,7 @@ class Editor(QMainWindow):
         # Independent edge tab: remains visible even after the entire chat window hides.
         peek=QPushButton(self)
         self._director_peek=peek
-        peek.setToolTip('Mr Director is hiding — click his head to reopen the chat')
+        peek.setToolTip('Eli is hiding — click his head to reopen the chat')
         peek.setFixedSize(82,150)
         peek.setStyleSheet('QPushButton {background:#10252c; border:2px solid #00d6dc; border-top-left-radius:16px; border-bottom-left-radius:16px; padding:0;}')
         head_path=os.path.join(os.path.dirname(__file__),'assets','mr_director_head.png')
@@ -753,9 +753,10 @@ class Editor(QMainWindow):
         assistant_area=QVBoxLayout()
         outer.addLayout(assistant_area,3)
         assistant_tabs=QTabWidget(dlg)
+        assistant_tabs.setStyleSheet("QTabBar::tab { background: #352529; color: #eadadd; padding: 8px 14px; } QTabBar::tab:selected { background: #74404a; color: white; } QTabBar::tab:hover { background: #59323a; }")
         assistant_area.addWidget(assistant_tabs)
         director_page=QWidget();right=QVBoxLayout(director_page);right.setSpacing(9)
-        assistant_tabs.addTab(director_page,'Editor-X')
+        assistant_tabs.addTab(director_page,'Eli')
         preview_page=QWidget();preview_layout=QVBoxLayout(preview_page)
         preview_layout.addWidget(QLabel('Review proposed edits before applying changes.'))
         preview_open=self.button('Open Edit Preview',lambda checked=False:self.open_auto_editor(from_assistant=True))
@@ -776,7 +777,7 @@ class Editor(QMainWindow):
             profile_description.setText(f'{name}: target {profile["budget_gb"]} GB Ollama RAM, {profile["max_frames"]} sampled frames, context {profile["num_ctx"]}. Actual RAM may exceed this target.')
         performance_mode.currentTextChanged.connect(lambda _value:update_profile())
         update_profile()
-        refresh_status=QLabel('Refresh AI unloads FragForge models; they reload on the next request.')
+        refresh_status=QLabel('Refresh AI unloads Eli models; they reload on the next request.')
         refresh_status.setWordWrap(True);mode_layout.addWidget(refresh_status)
         refresh_button=self.button('Refresh AI',lambda:None)
         mode_layout.addWidget(refresh_button)
@@ -800,7 +801,7 @@ class Editor(QMainWindow):
                     state['plan']=None
                     state['plan_text']=''
                     state['worker']=None
-                    chat.setPlainText('Editor-X: Fresh conversation. Your video and timeline edits are preserved.')
+                    chat.setPlainText('Eli: Fresh conversation. Your video and timeline edits are preserved.')
                     request.clear()
                     preview.clear()
                     reply_label.setText('Ready to work on the current V1 edit.')
@@ -813,7 +814,7 @@ class Editor(QMainWindow):
         refresh_button.clicked.connect(lambda checked=False:refresh_ai())
         mode_layout.addStretch(1)
         assistant_tabs.addTab(ai_mode_page,'AI Mode')
-        heading=QLabel('EDITOR-X  •  YOUR AI EDITING PARTNER')
+        heading=QLabel('ELI  •  YOUR AI EDITING PARTNER')
         heading.setStyleSheet('font-size:17px; font-weight:600; color:#25e2df;')
         right.addWidget(heading)
         row=QHBoxLayout();right.addLayout(row)
@@ -822,7 +823,7 @@ class Editor(QMainWindow):
         install=self.button('Install Free AI',lambda checked=False:install_local_ai());row.addWidget(install)
         status=QLabel('Checking local Ollama…');status.setWordWrap(True);right.addWidget(status)
         chat=QPlainTextEdit();chat.setReadOnly(True)
-        chat.setPlainText('Editor-Xirector: Welcome to FragForge!')
+        chat.setPlainText('Eli: Welcome to FragForge!')
         right.addWidget(chat,4)
         request=QPlainTextEdit()
         request.setPlaceholderText('Ask me a question, or describe the video edit you want…')
@@ -879,14 +880,14 @@ class Editor(QMainWindow):
             state['plan']=plan
             state['plan_text']=self._assistant_request
             preview.setPlainText(describe_plan(plan))
-            chat.appendPlainText('Editor-X: '+reply+'\n')
+            chat.appendPlainText('Eli: '+reply+'\n')
             reply_label.setText(reply)
             launch.setEnabled(True)
             send.setEnabled(True)
         def send_request():
             value=request.toPlainText().strip()
             if not value:
-                QMessageBox.information(dlg,'Editor-X','Tell me what you want edited first.');return
+                QMessageBox.information(dlg,'Eli','Tell me what you want edited first.');return
             self._assistant_request=value
             chat.appendPlainText('You: '+value)
             # Send Message is conversation-only. Never start analysis here.
@@ -903,35 +904,35 @@ class Editor(QMainWindow):
             send.setEnabled(False)
             if not state['models']:
                 if chat_mode:
-                    chat.appendPlainText('Editor-X: My local AI is offline. Your edit instructions are saved; click Prepare Edit to start, or Connect to chat.\n')
+                    chat.appendPlainText('Eli: My local AI is offline. Your edit instructions are saved; click Prepare Edit to start, or Connect to chat.\n')
                     reply_label.setText('Connect my local AI so we can chat!')
                     send.setEnabled(True)
                 else:
                     show_plan(interpret_request(value),'My AI is offline; I prepared a basic edit plan.')
                 return
             if not acquire_ai_job('chat'):
-                chat.appendPlainText('Editor-X: Another AI job is running. Wait for it to finish.\n')
+                chat.appendPlainText('Eli: Another AI job is running. Wait for it to finish.\n')
                 send.setEnabled(True)
                 return
             worker=LocalDirectorWorker(value,DEFAULT_MODEL,state['history'][-6:],chat_mode)
             state['worker']=worker
             self._local_director_worker=worker
-            status.setText('● Editor-X is thinking… Please wait.')
+            status.setText('● Eli is thinking… Please wait.')
             def ready(plan,reply):
                 release_ai_job('chat')
                 status.setText('● Local AI ready')
                 if plan is None:
-                    chat.appendPlainText('Editor-X: '+reply+'\n')
+                    chat.appendPlainText('Eli: '+reply+'\n')
                     reply_label.setText(reply)
                     send.setEnabled(True)
                 else:
                     show_plan(plan,reply)
-                state['history'].extend(['You: '+value,'Editor-X: '+reply])
+                state['history'].extend(['You: '+value,'Eli: '+reply])
             def failed(error):
                 release_ai_job('chat')
                 status.setText('Local AI request failed — error shown in chat. You can retry.')
                 if chat_mode:
-                    chat.appendPlainText('Editor-X: I could not generate a reply. Your instructions are saved; Prepare Edit is still available.\n')
+                    chat.appendPlainText('Eli: I could not generate a reply. Your instructions are saved; Prepare Edit is still available.\n')
                     reply_label.setText('I hit a connection issue. Please try again.')
                     send.setEnabled(True)
                 else:
@@ -964,7 +965,7 @@ class Editor(QMainWindow):
             self._assistant_pending_tasks=list(state['requests'])
             # Keep the assistant window open while the preview is created.
             # Keep it alive and visible; the edit preview is a separate modal dialog.
-            chat.appendPlainText('Editor-X: Preparing your edit now. Your chat remains available.\n')
+            chat.appendPlainText('Eli: Preparing your edit now. Your chat remains available.\n')
             status.setText('● Preparing edit preview…')
             send.setEnabled(False)
             launch.setEnabled(False)
@@ -973,7 +974,7 @@ class Editor(QMainWindow):
                     self.open_auto_editor(auto_analyze=True,from_assistant=True)
                     assistant_tabs.setCurrentWidget(preview_page)
                 except Exception as exc:
-                    chat.appendPlainText('Mr Director: Unable to open edit preview: '+str(exc)+'\n')
+                    chat.appendPlainText('Eli: Unable to open edit preview: '+str(exc)+'\n')
                     QMessageBox.warning(dlg,'Edit preview failed',str(exc))
                 finally:
                     send.setEnabled(True)
@@ -996,7 +997,7 @@ class Editor(QMainWindow):
         # A modeless child avoids a nested event loop that previously blocked the chat.
         parent_dialog=getattr(self,'_director_dialog',None) if from_assistant else None
         dlg=QDialog(parent_dialog if parent_dialog is not None else self)
-        dlg.setWindowTitle('FragForge AI — Editor-X is Working');dlg.resize(760,530)
+        dlg.setWindowTitle('Eli Studio — Eli is Working');dlg.resize(760,530)
         if from_assistant:
             dlg.setWindowModality(Qt.NonModal)
             dlg.setAttribute(Qt.WA_DeleteOnClose,True)
@@ -1024,11 +1025,12 @@ class Editor(QMainWindow):
         form_layout.setSpacing(4)
         form_layout.setContentsMargins(4,4,4,4)
         editor_tabs=QTabWidget(dlg)
+        editor_tabs.setStyleSheet("QTabBar::tab { background: #352529; color: #eadadd; padding: 8px 14px; } QTabBar::tab:selected { background: #74404a; color: white; }")
         work_page=QWidget(dlg)
         work_layout=QVBoxLayout(work_page)
         work_layout.setAlignment(Qt.AlignCenter)
         # Native Qt animated GIF: lightweight and independent of Ollama workers.
-        working_art=QLabel('EDITOR-X')
+        working_art=QLabel('ELI')
         working_art.setAlignment(Qt.AlignCenter)
         working_art.setStyleSheet('font-size:20px; color:#25e2df; font-weight:700; background:transparent;')
         work_layout.addWidget(working_art)
@@ -1063,7 +1065,7 @@ class Editor(QMainWindow):
         work_bar.setFormat('%p%')
         work_layout.addWidget(work_bar)
         work_layout.addStretch(1)
-        editor_tabs.addTab(work_page,'Editor-X Working')
+        editor_tabs.addTab(work_page,'Eli Working')
         editor_tabs.addTab(scroll,'Edit Details')
         layout.addWidget(editor_tabs,1)
         scroll.setWidget(form)
@@ -1130,7 +1132,7 @@ class Editor(QMainWindow):
             music_library_status.setText(f'Included music library: {len(music_library_tracks)} versions (50 songs)')
         music_request=QLineEdit();music_request.setPlaceholderText('Song title or genre + track number + full/loop (e.g. dark survival track 4 loop)')
         settings_layout.addWidget(music_request)
-        music_selection=QLabel('Mr Director: no track selected')
+        music_selection=QLabel('Eli: no track selected')
         settings_layout.addWidget(music_selection)
         def select_requested_music():
             if not music_library_tracks:
@@ -1138,10 +1140,10 @@ class Editor(QMainWindow):
             choice=choose_track(music_library_tracks,music_request.text() or str((pending or {}).get('original','')))
             if choice:
                 music_path.setText(str(choice['path']))
-                music_selection.setText(f'Mr Director selected: {choice["title"]} · {choice["genre"]} · {choice["reason"]}')
+                music_selection.setText(f'Eli selected: {choice["title"]} · {choice["genre"]} · {choice["reason"]}')
             else:
                 QMessageBox.information(dlg,'Music not found','No matching song/version. Choose an available title or genre + track number.')
-        settings_layout.addWidget(self.button('Mr Director — Select requested track',lambda checked=False:select_requested_music()))
+        settings_layout.addWidget(self.button('Eli — Select requested track',lambda checked=False:select_requested_music()))
         def choose_music_library():
             folder=QFileDialog.getExistingDirectory(dlg,'Choose licensed music folder',str(Path.home()))
             if not folder:return
@@ -1153,7 +1155,7 @@ class Editor(QMainWindow):
                 choice=choose_track(tracks,music_request.text() or str((pending or {}).get('music','')))
                 if choice:
                     music_path.setText(str(choice['path']))
-                    music_selection.setText(f'Mr Director selected: {choice["title"]} · {choice["genre"]}')
+                    music_selection.setText(f'Eli selected: {choice["title"]} · {choice["genre"]}')
         library_button.clicked.connect(lambda checked=False:choose_music_library())
 
         settings_layout=collapsible_section('03  Combat detection & review', True)
@@ -1186,7 +1188,7 @@ class Editor(QMainWindow):
                 QMessageBox.warning(dlg,'Vision AI','Invalid model name.');return
             exe=_shutil.which('ollama')
             if not exe:
-                QMessageBox.warning(dlg,'Vision AI','Ollama is not installed. Install Ollama first using the Mr Director setup button.');return
+                QMessageBox.warning(dlg,'Vision AI','Ollama is not installed. Install Ollama first using the Eli setup button.');return
             try:
                 # Open an interactive terminal so the user sees download size, progress and errors.
                 # Start PowerShell directly. `cmd /c start` mis-parses the title
@@ -1250,7 +1252,7 @@ class Editor(QMainWindow):
                 report=QPlainTextEdit()
                 report.setReadOnly(True)
                 report.setMaximumHeight(145)
-                report.setPlainText('REQUESTS FROM MR DIRECTOR\n'+'\n'.join(
+                report.setPlainText('REQUESTS FROM ELI\n'+'\n'.join(
                     ('READY: ' if t['supported'] else 'NOT IMPLEMENTED: ')+t['label'] for t in tasks))
                 settings_layout.addWidget(report)
             mode.setCurrentIndex(1 if 0 < float(pending.get('target_seconds',0)) <= 300 else (2 if pending['mode']=='longform' else 1))
@@ -1411,10 +1413,10 @@ class Editor(QMainWindow):
         def review_recognition_markers():
             markers=state.get('markers',[])
             if not markers:
-                QMessageBox.information(dlg,'Mr Director — Recognition','No recognition markers yet. Enable vision or audio scanning and analyze the video first.')
+                QMessageBox.information(dlg,'Eli — Recognition','No recognition markers yet. Enable vision or audio scanning and analyze the video first.')
                 return
             report=director_report(markers)
-            review=QDialog(dlg);review.setWindowTitle('Mr Director — Recognition markers');review.resize(740,520)
+            review=QDialog(dlg);review.setWindowTitle('Eli — Recognition markers');review.resize(740,520)
             review_layout=QVBoxLayout(review)
             review_text=QPlainTextEdit();review_text.setReadOnly(True);review_text.setPlainText(report)
             review_layout.addWidget(review_text)
@@ -1559,7 +1561,7 @@ class Editor(QMainWindow):
                 clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Director edit — AI candidate, not verified kill')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
-                # Editor-X Audio Intelligence: cuts and merges are NEVER sound events.
+                # Eli Audio Intelligence: cuts and merges are NEVER sound events.
                 # Do not insert bell/board cues at clip boundaries.
                 position+=length
             if music_path.text().strip():
@@ -1574,7 +1576,7 @@ class Editor(QMainWindow):
                         self.clips.append(dict(path=chosen_music,start=0.,end=take,at=at,
                                                track='A2',audio=True,kind='audio',speed=1.,
                                                effect='None',fade=min(.75,take/4),volume=.24,
-                                               label='Mr Director background music — selected from requested genre'))
+                                               label='Eli background music — selected from requested genre'))
                         at+=take
                 except Exception as exc:errors.append('Background music: '+str(exc))
             # Add restrained accents only at measured activity peaks. These are
@@ -1675,7 +1677,7 @@ class Editor(QMainWindow):
     def open_effect_library(self):
         # Build the library without copying or loading 100 images on the UI thread.
         dlg=QDialog(self)
-        dlg.setWindowTitle('FragForge Gaming Effects — 100 Presets')
+        dlg.setWindowTitle('Eli Studio Gaming Effects — 100 Presets')
         dlg.setMinimumSize(660,540)
         layout=QVBoxLayout(dlg)
         layout.addWidget(QLabel('Choose an effect, then add it to the V3 overlay track.'))
@@ -1743,7 +1745,7 @@ class Editor(QMainWindow):
         refresh()
         dlg.exec()
     def open_sound_library(self):
-        dlg=QDialog(self);dlg.setWindowTitle('FragForge — Curated Soundboard & Audio Library');dlg.setMinimumSize(640,520)
+        dlg=QDialog(self);dlg.setWindowTitle('Eli Studio — Curated Soundboard & Audio Library');dlg.setMinimumSize(640,520)
         layout=QVBoxLayout(dlg)
         layout.addWidget(QLabel('42 newly produced soundboard and editing sounds; original audio (not extracted meme recordings). Import your own licensed clips.'))
         search=QLineEdit();search.setPlaceholderText('Search sounds: boom, metal pipe, airhorn, record scratch, music loop...');layout.addWidget(search)
@@ -2371,7 +2373,7 @@ class Editor(QMainWindow):
         # Move the SAME video widget into a separate fullscreen window so the
         # editor stays intact and Windows can minimize the preview independently.
         window=PreviewWindow(self.restore_preview)
-        window.setWindowTitle('FragForge AI — Fullscreen Preview')
+        window.setWindowTitle('Eli Studio — Fullscreen Preview')
         window.setStyleSheet(f'background:{BG};color:{FG};')
         layout=QVBoxLayout(window);layout.setContentsMargins(4,4,4,4);layout.setSpacing(3)
         controls=QHBoxLayout()
@@ -2436,7 +2438,7 @@ class Editor(QMainWindow):
         self.player.pause()
         self.export_started=time.monotonic()
         self.render_dialog=QDialog(self)
-        self.render_dialog.setWindowTitle('FragForge — Rendering MP4')
+        self.render_dialog.setWindowTitle('Eli Studio — Rendering MP4')
         self.render_dialog.setMinimumWidth(420)
         layout=QVBoxLayout(self.render_dialog)
         self.render_status=QLabel('Encoding video and mixing audio...')
