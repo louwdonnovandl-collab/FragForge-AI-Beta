@@ -1099,7 +1099,7 @@ class Editor(QMainWindow):
         length=QDoubleSpinBox();length.setRange(1.,15.);length.setValue(4.);length.setSuffix(' sec per highlight')
         sensitivity=QDoubleSpinBox();sensitivity.setRange(.1,.65);sensitivity.setSingleStep(.05);sensitivity.setValue(.24)
         effects=QCheckBox('Insert visual effects on V3 at candidate cuts');effects.setChecked(True)
-        sounds=QCheckBox('Insert built-in sound cues on A2');sounds.setChecked(False)
+        sounds=QCheckBox('Insert automatic sound cues (disabled: no verified audio events)');sounds.setChecked(False);sounds.setEnabled(False)
         speedup=QCheckBox('Speed up low-activity sections (2×, minimum 12 seconds)');speedup.setChecked(True)
         replace=QCheckBox('Replace current timeline with suggested montage (Undo available)')
         replace.setChecked(False)
@@ -1238,7 +1238,7 @@ class Editor(QMainWindow):
             sensitivity.setEnabled(index!=2)
             speedup.setEnabled(index==2)
             effects.setEnabled(True)
-            sounds.setEnabled(True)
+            sounds.setEnabled(False)
         mode.currentIndexChanged.connect(preset_changed)
         preset_changed(0)
         pending=getattr(self,'_assistant_pending_plan',None)
@@ -1262,7 +1262,7 @@ class Editor(QMainWindow):
             intro_duration.setValue(float(pending.get('intro_seconds',0)))
             speedup.setChecked(pending['speedup'])
             effects.setChecked(pending['effects'])
-            sounds.setChecked(pending['sounds'])
+            sounds.setChecked(False)  # Automatic cues require verified event recognition
             replace.setChecked(True)  # Requested edit selected; timeline replacement still asks approval
             preset_changed(mode.currentIndex())
         results=QListWidget();results.setMinimumHeight(115);settings_layout.addWidget(results)
@@ -1559,22 +1559,8 @@ class Editor(QMainWindow):
                 clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Director edit — AI candidate, not verified kill')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
-                # Sound at actual edit boundaries only, not arbitrary intervals.
-                # The opening intro cue and discontinuous source cuts have a
-                # specific editing purpose. Continuous 120s chunks do not.
-                previous=timeline[i-1] if i else None
-                cut_boundary=bool(previous and (abs(previous[2]-a)>0.3 or previous[0]!=part))
-                if sounds.isChecked() and (i==0 and part=='intro' or cut_boundary):
-                    try:
-                        key='board_001' if i==0 else 'board_003'
-                        path=resolve_sound(key);duration_sfx,_=probe(path)
-                        cue_len=min(duration_sfx,max(.1,length-.1),1.5)
-                        self.clips.append(dict(path=path,start=0.,end=cue_len,at=position+.05,
-                                               track='A2',audio=True,kind='audio',speed=1.,
-                                               effect='None',fade=.12,volume=.40,
-                                               label='Director transition cue — source cut'))
-                        added_sfx+=1
-                    except Exception as exc:errors.append('Transition sound: '+str(exc))
+                # Editor-X Audio Intelligence: cuts and merges are NEVER sound events.
+                # Do not insert bell/board cues at clip boundaries.
                 position+=length
             if music_path.text().strip():
                 try:
@@ -1604,15 +1590,9 @@ class Editor(QMainWindow):
                                                label=f'Director visual — {reason} (contrast {contrast:g}, unverified)'))
                         added_fx+=1
                     except Exception as exc:errors.append('Activity visual: '+str(exc))
-                if sounds.isChecked():
-                    try:
-                        path=resolve_sound('board_024');sound_duration,_=probe(path)
-                        self.clips.append(dict(path=path,start=0.,end=min(sound_duration,.75),
-                                               at=output_time,track='A2',audio=True,kind='audio',
-                                               speed=1.,effect='None',fade=.12,volume=.34,
-                                               label=f'Director activity cue — {reason} (unverified)'))
-                        added_sfx+=1
-                    except Exception as exc:errors.append('Activity sound: '+str(exc))
+                # Visual contrast peaks are not verified gunshots or impacts.
+                # Automatic event SFX remain disabled until audio/video recognition
+                # provides reliable, timestamped evidence and explicit user consent.
             # Validate the actual V1 timeline, not the analysis estimate. A failed
             # edit must restore the original clips rather than claim success.
             requested=float(target_duration.value())
