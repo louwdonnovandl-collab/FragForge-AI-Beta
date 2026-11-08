@@ -97,7 +97,7 @@ def intro_from_activity(segments, peaks, seconds):
     return selected
 
 
-def precision_montage(segments, peaks, target_seconds, speed=1.5, intro_seconds=0):
+def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0):
     """Select active excerpts for a duration-constrained montage.
 
     Activity peaks are visual-motion candidates, not confirmed kills. Returns

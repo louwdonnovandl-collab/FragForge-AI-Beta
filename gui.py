@@ -882,7 +882,14 @@ class Editor(QMainWindow):
                 QMessageBox.information(dlg,'Mr Director','Tell me what you want edited first.');return
             self._assistant_request=value
             chat.appendPlainText('You: '+value)
-            # Send Message is conversation/recognition only; editing requires explicit Prepare Edit.
+            # Editing commands launch the real editing workflow; chat remains conversational.
+            edit_intent=bool(re.search(r'\b(edit|montage|highlight|clip|cut|trim)\b',value,re.I) and re.search(r'\b(video|gameplay|footage|second|minute|combat|kill|music|rock|montage|highlight|clip)\b',value,re.I))
+            if edit_intent:
+                state['plan']=interpret_request(value)
+                state['plan_text']=value
+                chat.appendPlainText('Mr Director: I will prepare the requested edit using the actual editor. I will ask before changing your timeline.\n')
+                run_edit()
+                return
             chat_mode=True
             # Preserve the last valid edit plan while processing follow-up chat.
             # A failed AI response must not disable Prepare Edit.
@@ -983,8 +990,47 @@ class Editor(QMainWindow):
         form_layout=QVBoxLayout(form)
         form_layout.setSpacing(4)
         form_layout.setContentsMargins(4,4,4,4)
-        layout.addWidget(scroll,1)
+        editor_tabs=QTabWidget(dlg)
+        work_page=QWidget(dlg)
+        work_layout=QVBoxLayout(work_page)
+        work_layout.setAlignment(Qt.AlignCenter)
+        working_art=QLabel('✍  MR DIRECTOR  ✍')
+        working_art.setAlignment(Qt.AlignCenter)
+        working_art.setStyleSheet('font-size:28px; color:#25e2df; font-weight:700;')
+        work_layout.addWidget(working_art)
+        avatar_picture=QLabel()
+        avatar_picture.setAlignment(Qt.AlignCenter)
+        avatar_file=Path(__file__).resolve().parent/'assets'/'mr_director.png'
+        if avatar_file.is_file():
+            avatar_picture.setPixmap(QPixmap(str(avatar_file)).scaled(190,190,Qt.KeepAspectRatio,Qt.SmoothTransformation))
+            work_layout.addWidget(avatar_picture)
+        work_message=QLabel('Please wait, I am busy working on your video!')
+        work_message.setAlignment(Qt.AlignCenter)
+        work_message.setWordWrap(True)
+        work_message.setStyleSheet('font-size:17px; color:#e5f5ff;')
+        work_layout.addWidget(work_message)
+        work_stage=QLabel('Preparing analysis…')
+        work_stage.setAlignment(Qt.AlignCenter)
+        work_layout.addWidget(work_stage)
+        work_bar=QProgressBar()
+        work_bar.setRange(0,100)
+        work_bar.setValue(0)
+        work_bar.setFormat('%p%')
+        work_layout.addWidget(work_bar)
+        work_layout.addStretch(1)
+        editor_tabs.addTab(work_page,'Mr Director Working')
+        editor_tabs.addTab(scroll,'Edit Details')
+        layout.addWidget(editor_tabs,1)
         scroll.setWidget(form)
+        # Small pen animation uses Qt timer; it does not load another AI model.
+        pen_frames=['✍  MR DIRECTOR  ·','✍  MR DIRECTOR  ··','✍  MR DIRECTOR  ···','✍  MR DIRECTOR']
+        pen_state={'i':0}
+        pen_timer=QTimer(dlg)
+        def animate_pen():
+            pen_state['i']=(pen_state['i']+1)%len(pen_frames)
+            working_art.setText(pen_frames[pen_state['i']])
+        pen_timer.timeout.connect(animate_pen)
+        pen_timer.start(280)
         # All settings/results live inside the scroll pane; buttons stay pinned.
         settings_layout=form_layout
         def collapsible_section(title, expanded=False):
@@ -1053,7 +1099,7 @@ class Editor(QMainWindow):
         def select_requested_music():
             if not music_library_tracks:
                 QMessageBox.information(dlg,'Music library','Choose a music library folder first.');return
-            choice=choose_track(music_library_tracks,music_request.text() or (pending or {}).get('music',''))
+            choice=choose_track(music_library_tracks,music_request.text() or str((pending or {}).get('original','')))
             if choice:
                 music_path.setText(str(choice['path']))
                 music_selection.setText(f'Mr Director selected: {choice["title"]} · {choice["genre"]} · {choice["reason"]}')
@@ -1140,10 +1186,10 @@ class Editor(QMainWindow):
             settings_layout.addWidget(QLabel(title));settings_layout.addWidget(widget)
         settings_layout.addWidget(effects);settings_layout.addWidget(sounds);settings_layout.addWidget(speedup)
         settings_layout=collapsible_section('05  Apply & review', True)
-        settings_layout.addWidget(replace)
+        replace.setChecked(True);replace.hide()
         status=QLabel('Click Analyze to find potential edit points.');settings_layout.addWidget(status)
-        analysis_bar=QProgressBar();analysis_bar.setRange(0,100);analysis_bar.setValue(0);analysis_bar.setFormat('%p%')
-        settings_layout.addWidget(analysis_bar)
+        status.textChanged.connect(lambda message:work_stage.setText(message[:180]))
+        analysis_bar=work_bar
         def preset_changed(index):
             custom=(index==1)
             count.setEnabled(custom);length.setEnabled(custom)
@@ -1167,9 +1213,9 @@ class Editor(QMainWindow):
                 settings_layout.addWidget(report)
             mode.setCurrentIndex(1 if 0 < float(pending.get('target_seconds',0)) <= 300 else (2 if pending['mode']=='longform' else 1))
             target_duration.setValue(float(pending.get('target_seconds',pending.get('target_minutes',0)*60)))
-            playback_speed.setValue(float(pending.get('requested_speed',1.5)))
+            playback_speed.setValue(float(pending.get('requested_speed') or 1.0))
             if pending.get('music'):
-                music_request.setText('rock' if re.search(r'\brock\b',str(pending.get('original','')),re.I) else str(pending.get('original','')))
+                music_request.setText(str(pending.get('original','')))
                 select_requested_music()
             intro_duration.setValue(float(pending.get('intro_seconds',0)))
             speedup.setChecked(pending['speedup'])
@@ -1257,7 +1303,13 @@ class Editor(QMainWindow):
                             if merged and a<=merged[-1][1]:merged[-1]=(merged[-1][0],max(b,merged[-1][1]),1.)
                             else:merged.append((a,b,1.))
                         base=merged
-                    _,segments=precision_montage(base,[(t,1000.) for t in confirmed] if (focus and confirmed) else cuts.get('activity_peaks',[]),target_duration.value(),playback_speed.value(),runtime(intro))
+                    # Duration means FINAL playback runtime, not source footage seconds.
+                    # Use full-source activity candidates when combat-only windows cannot fill the target.
+                    peaks=[(t,1000.) for t in confirmed] if (focus and confirmed) else cuts.get('activity_peaks',[])
+                    _,segments=precision_montage(base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
+                    if runtime(segments)+runtime(intro)<target_duration.value()-.15 and focus and confirmed:
+                        full_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
+                        _,segments=precision_montage(full_base,peaks+cuts.get('activity_peaks',[]),target_duration.value(),playback_speed.value(),runtime(intro))
                     state['intro']=intro;state['segments']=segments
                     windows=[(a,b) for a,b,_ in segments]
                 else:
@@ -1274,7 +1326,8 @@ class Editor(QMainWindow):
                 status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).')
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
-            analysis_bar.setValue(100);activity.update(last_update=time.monotonic(),stage='Analysis complete — review selected clips');analyze.setEnabled(True);apply.setEnabled(bool(windows))
+            analysis_bar.setValue(100);work_message.setText('Your edit is prepared. Review it before applying changes.')
+            editor_tabs.setCurrentWidget(scroll);activity.update(last_update=time.monotonic(),stage='Analysis complete — review selected clips');analyze.setEnabled(True);apply.setEnabled(bool(windows))
             release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
             if not windows:
                 status.setText('Analysis finished but no valid clips were selected. Try allowing unverified footage, disabling combat-only focus, or changing the target duration; then reanalyze.')
@@ -1282,7 +1335,7 @@ class Editor(QMainWindow):
             release_ai_job('analysis')
             heartbeat.stop();cancel_button.setEnabled(False)
             analysis_bar.setRange(0,100)
-            status.setText('Analysis failed — see error details');analyze.setEnabled(True);apply.setEnabled(False)
+            status.setText('Analysis failed — see error details');work_message.setText('Analysis stopped. Please review the error.');analyze.setEnabled(True);apply.setEnabled(False)
             QMessageBox.warning(dlg,'Auto Edit Analysis',message)
         # A UI heartbeat keeps the dialog visibly responsive even when FFmpeg
         # cannot provide timestamps (slow seeking, codec initialization, etc.).
@@ -1349,7 +1402,7 @@ class Editor(QMainWindow):
             worker=VisionScanWorker(source['path'],full_end,model,audio_enabled.isChecked())
             worker.profile=getattr(self,'_ai_performance_mode','Balanced')
             self._vision_scan_worker=worker
-            worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage=f'Vision scan {pct}% — sampled frames, not verified kills')))
+            worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))
             def done(result):
                 state['vision']=result
                 state['markers']=build_markers(result.get('samples',[]),result.get('audio',{}).get('events',[]))
@@ -1375,6 +1428,7 @@ class Editor(QMainWindow):
             if not acquire_ai_job('analysis'):
                 QMessageBox.warning(dlg,'AI busy','An AI job is already active. Wait for it to finish or cancel it first.')
                 return
+            editor_tabs.setCurrentWidget(work_page);work_message.setText('Please wait, I am busy working on your video!')
             analyze.setEnabled(False);apply.setEnabled(False);markers_button.setEnabled(False);state['markers']=[];cancel_button.setEnabled(True);analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             activity.update(started=time.monotonic(),last_update=time.monotonic(),last_pct=0,stage='Starting analysis')
             status.setText('Launching FFmpeg scene analysis…')
@@ -1421,14 +1475,15 @@ class Editor(QMainWindow):
             if pending and pending.get('music') and not music_path.text().strip():
                 select_requested_music()
             if pending and pending.get('music') and not music_path.text().strip():
-                choice=QMessageBox(dlg)
-                choice.setWindowTitle('Mr Director — Music not selected')
-                choice.setText('You requested background music, but no track is selected.')
-                choice.setInformativeText('Apply without music, or return to choose a track?')
-                continue_button=choice.addButton('Apply without music',QMessageBox.AcceptRole)
-                choice.addButton('Choose music',QMessageBox.RejectRole)
-                choice.exec()
-                if choice.clickedButton()!=continue_button:return
+                QMessageBox.warning(dlg,'Music required','The requested music was not found in the bundled library. No edit was applied. Check the installed music assets.')
+                return
+            if music_path.text().strip():
+                try:
+                    if not Path(music_path.text().strip()).is_file():raise FileNotFoundError(music_path.text().strip())
+                    music_duration,_=probe(music_path.text().strip())
+                    if music_duration<=0:raise ValueError('Invalid music duration')
+                except Exception as exc:
+                    QMessageBox.warning(dlg,'Music unavailable','Cannot apply requested soundtrack: '+str(exc));return
             previous_clips=copy.deepcopy(self.clips)
             if replace.isChecked():
                 confirmation=QMessageBox.question(dlg,'Replace Timeline',
@@ -1520,32 +1575,9 @@ class Editor(QMainWindow):
             failures=[]
             if not timeline or actual_v1<=0:
                 failures.append('No video clips were placed on V1')
-            # A shorter valid montage is a creative choice, not a corrupt timeline.
-            # Ask the editor before committing it; re-edit restores the old timeline.
-            shorter=bool(requested and actual_v1>0 and actual_v1<requested-tolerance)
-            if requested and actual_v1>requested+tolerance:
-                failures.append(f'V1 video exceeds target: {actual_v1:.2f}s > {requested:.2f}s')
-            if requested and actual_total>requested+tolerance:
-                failures.append(f'Full timeline exceeds target: {actual_total:.2f}s > {requested:.2f}s')
-
-            if not failures and shorter:
-                choice=QMessageBox(dlg)
-                choice.setWindowTitle('Mr Director — Review shorter edit')
-                choice.setIcon(QMessageBox.Question)
-                choice.setText(f'I created a shorter {actual_v1:.1f}-second version. You requested {requested:.1f} seconds.')
-                choice.setInformativeText('Would you like to keep this version, or should I re-edit?')
-                keep_button=choice.addButton('Keep shorter edit',QMessageBox.AcceptRole)
-                redo_button=choice.addButton('Re-edit',QMessageBox.ActionRole)
-                choice.addButton('Cancel',QMessageBox.RejectRole)
-                choice.exec()
-                if choice.clickedButton()!=keep_button:
-                    self.clips=previous_clips
-                    self.selected=None
-                    self.update_all()
-                    if choice.clickedButton()==redo_button:
-                        QMessageBox.information(dlg,'Re-edit requested',
-                            'Your original timeline is restored. Adjust the duration, playback speed, or selected moments, then click Analyze video again.')
-                    return
+            # Never silently accept a shorter export than explicitly requested.
+            if requested and abs(actual_v1-requested)>tolerance:
+                failures.append(f'Final video is {actual_v1:.2f}s; requested {requested:.2f}s. Re-analyze with more source footage.')
             if failures:
                 self.clips=previous_clips
                 self.selected=None
@@ -1558,10 +1590,16 @@ class Editor(QMainWindow):
                      f'{added_sfx} sound cues; verified timeline {actual_total:.2f}s ({actual_total/60:.2f} min). '
                      f'Intro: {runtime(intro):.1f}s of UNVERIFIED action candidates. '
                      'Activity candidates are NOT verified kills. Review before exporting.')
-            if pending and pending.get('music') and not music_path.text().strip():
-                summary+='\nMUSIC NOT ADDED: choose a music file in the edit preview.'
+            if music_path.text().strip():
+                summary+='\nMusic: '+Path(music_path.text().strip()).stem
             if pending and pending.get('focus_kills'):
                 summary+=('\nCOMBAT: user-confirmed timestamps used (not automatic kill recognition).' if combat_markers.text().strip() else '\nKILLS NOT VERIFIED: unverified action montage.')
+            if errors and any(e.startswith('Background music:') for e in errors):
+                self.clips=previous_clips
+                self.selected=None
+                self.update_all()
+                QMessageBox.critical(dlg,'Music edit failed','The requested music could not be inserted. Original timeline restored.\n'+'; '.join(errors[:4]))
+                return
             if errors:summary+='\nSkipped items: '+'; '.join(errors[:4])
             self.player.pause();self.selected=None;self.playhead=0.
             self.update_all();self.preview_at=0
