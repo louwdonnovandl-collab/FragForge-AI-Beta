@@ -107,15 +107,36 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
     budget=max(0.,float(target_seconds)-max(0.,float(intro_seconds)))
     eligible=[(float(a),float(b)) for a,b,_ in segments if b-a>.3]
     if not eligible or budget<=0:return [],[]
-    # Prefer windows surrounding high visual activity, with chronological output.
+    # Build complete activity sequences instead of cutting every marker into
+    # fixed six-second chunks. Group nearby peaks and retain context on both sides.
     candidates=[]
-    for t,score in sorted(peaks,key=lambda x:-float(x[1])):
-        for a,b in eligible:
-            if a<=t<b:
-                x=max(a,float(t)-3*speed);y=min(b,x+6*speed)
-                if y-x>.3 and all(y<=u or x>=v for u,v,_ in candidates):
-                    candidates.append((x,y,float(score)))
-                break
+    for a,b in eligible:
+        local=sorted((float(t),float(score)) for t,score in peaks if a<=float(t)<b)
+        groups=[]
+        for t,score in local:
+            if groups and t-groups[-1][-1][0]<=4.*speed:
+                groups[-1].append((t,score))
+            else:
+                groups.append([(t,score)])
+        for group in groups:
+            first,last=group[0][0],group[-1][0]
+            x=max(a,first-2.5*speed)
+            y=min(b,last+2.*speed)
+            # Long sequences remain variable-length; cap at 20 output seconds
+            # to preserve variety in short montages.
+            if y-x>20.*speed:
+                y=x+20.*speed
+            if y-x>.3:
+                candidates.append((x,y,max(score for _,score in group)))
+    candidates.sort(key=lambda item:(item[0],item[1]))
+    merged=[]
+    for a,b,score in candidates:
+        if merged and a<=merged[-1][1]+.15:
+            u,v,s=merged[-1]
+            merged[-1]=(u,max(v,b),max(s,score))
+        else:
+            merged.append((a,b,score))
+    candidates=merged
     if not candidates:
         candidates=[(a,min(b,a+8*speed),0.) for a,b in eligible]
     # Fill all unused intervals, including partial gaps around activity peaks.
@@ -131,11 +152,28 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
             if cursor>=b:break
         if cursor<b-.03:candidates.append((cursor,b,0.))
     selected=[];remaining=budget
-    for a,b,_ in sorted(candidates,key=lambda c:-c[2]):
+    # Prefer entire high-priority events. Avoid cutting a fight in half just
+    # to use the last few seconds of the montage budget.
+    priority=sorted((c for c in candidates if c[2]>0),key=lambda c:-c[2])
+    filler=sorted((c for c in candidates if c[2]<=0),key=lambda c:c[0])
+    for a,b,_ in priority:
+        length=(b-a)/speed
+        if length<=remaining+.001:
+            selected.append((a,b,speed));remaining-=length
+    for a,b,_ in filler:
         if remaining<=.03:break
         take=min(b-a,remaining*speed)
         if take>.03:
             selected.append((a,a+take,speed));remaining-=take/speed
+    # If no other usable footage can fill the budget, allow one last partial
+    # activity segment, but never mislabel it as a complete combat event.
+    if remaining>.03:
+        for a,b,_ in priority:
+            if any(not (b<=u or a>=v) for u,v,_ in selected):continue
+            take=min(b-a,remaining*speed)
+            if take>.03:
+                selected.append((a,a+take,speed));remaining-=take/speed
+            if remaining<=.03:break
     selected.sort(key=lambda x:x[0])
     # Duration is measured in output seconds after speed adjustment.
     # Prevent overlapping selected source intervals from double-counting footage.

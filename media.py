@@ -145,7 +145,9 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             else:
                 parts.append(f'[{i}:v]trim=start={c["start"]:.4f}:duration={length*c.get("speed",1.):.4f},setpts=(PTS-STARTPTS)/{c.get("speed",1.):.5f},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},{effect}format=yuva420p,{fades}setpts=PTS+{c["at"]:.4f}/TB[v{i}]')
             out=f'm{i}'
-            parts.append(f'[{current}][v{i}]overlay=x=(W-w)/2+{x:.4f}:y=(H-h)/2+{y:.4f}:eof_action=pass:shortest=0:enable=\'between(t,{c["at"]:.4f},{c["at"]+length:.4f})\'[{out}]' if c.get('kind')=='effect' else f'[{current}][v{i}]overlay=eof_action=pass:shortest=0:enable=\'between(t,{c["at"]:.4f},{c["at"]+length:.4f})\'[{out}]')
+            # format=auto preserves the incoming RGBA alpha ramp; the default
+            # overlay pixel format can flatten alpha and turn dissolves into cuts.
+            parts.append(f'[{current}][v{i}]overlay=x=(W-w)/2+{x:.4f}:y=(H-h)/2+{y:.4f}:format=auto:eof_action=pass:shortest=0:enable=\'between(t,{c["at"]:.4f},{c["at"]+length:.4f})\'[{out}]' if c.get('kind')=='effect' else f'[{current}][v{i}]overlay=format=auto:eof_action=pass:shortest=0:enable=\'between(t,{c["at"]:.4f},{c["at"]+length:.4f})\'[{out}]')
             current=out
         if c.get('audio') and (c['track'].startswith('A') or c['track']=='V1'):
             delay=int(c['at']*1000)

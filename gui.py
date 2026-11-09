@@ -1368,25 +1368,12 @@ class Editor(QMainWindow):
                     automatic=combat_windows((state['vision'] or {}).get('samples',[]),full_end) if focus else []
                     if focus and automatic and not confirmed:
                         confirmed=[(a+b)/2 for a,b,_ in automatic]
-                    if focus and confirmed:
-                        # Rank combat candidates first. If these cannot fill the target,
-                        # offer other usable footage clearly labeled as supporting gameplay.
-                        marked=[]
-                        for t in confirmed:
-                            for a,b,_ in base:
-                                if a<=t<b:
-                                    x=max(a,t-6*playback_speed.value())
-                                    y=min(b,t+6*playback_speed.value())
-                                    if y-x>.5:marked.append((x,y,1.))
-                                    break
-                        marked.sort()
-                        merged=[]
-                        for a,b,_ in marked:
-                            if merged and a<=merged[-1][1]:merged[-1]=(merged[-1][0],max(b,merged[-1][1]),1.)
-                            else:merged.append((a,b,1.))
-                        base=merged
+                    # Keep the full clean source available for supporting clips.
+                    # Combat markers receive higher priority in precision_montage;
+                    # restricting base to only marker windows caused mid-fight cuts
+                    # and unnecessary insufficient-footage failures.
                     # Duration means FINAL playback runtime, not source footage seconds.
-                    peaks=[(t,1000.) for t in confirmed] if (focus and confirmed) else cuts.get('activity_peaks',[])
+                    peaks=([(t,1000.) for t in confirmed] + [(t,s) for t,s in cuts.get('activity_peaks',[]) if not focus or any(abs(t-c)<=8 for c in confirmed)]) if (focus and confirmed) else cuts.get('activity_peaks',[])
                     _,segments=precision_montage(base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
                     state['supporting_footage']=False
                     if not segments and focus and confirmed:
@@ -1424,7 +1411,9 @@ class Editor(QMainWindow):
 
             for i,(a,b) in enumerate(windows):
                 rate=state['segments'][i][2] if state['segments'] else 1.
-                results.addItem(f'{tc(a)}  →  {tc(b)}  ({b-a:.1f}s at {rate:g}×)')
+                has_marker=any(a<=t<=b for t,_ in ([(t,1000.) for t in confirmed] if 'confirmed' in locals() and confirmed else cuts.get('activity_peaks',[])))
+                reason='activity candidate — verify event' if has_marker else 'supporting gameplay'
+                results.addItem(f'{tc(a)}  →  {tc(b)}  ({b-a:.1f}s at {rate:g}×) — {reason}')
             if state['segments']:
                 status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
             else:
