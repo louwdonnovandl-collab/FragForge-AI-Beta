@@ -268,9 +268,21 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
                  if end_fade > .001 else '')
     parts.append(f'[{current}]format=yuv420p,{video_out}trim=duration={total:.6f}[vout]')
     if audio_labels:
-        audio_out = (f',afade=t=out:st={total-end_fade:.6f}:d={end_fade:.6f}'
+        # The audio mixer may carry delayed PTS from individual gameplay clips.
+        # Normalise the FINAL mixed stream to a zero-based 48 kHz sample clock,
+        # then fade by sample index (not inherited timeline timestamps). This
+        # guarantees that the last full second fades even when source clips
+        # have discontinuous timestamps or different sample rates.
+        audio_rate = 48000
+        fade_start_sample = max(0, round((total - end_fade) * audio_rate))
+        fade_sample_count = max(1, round(end_fade * audio_rate))
+        audio_out = (f',afade=t=out:ss={fade_start_sample}:ns={fade_sample_count}'
                      if end_fade > .001 else '')
-        parts.append(''.join(audio_labels)+f'amix=inputs={len(audio_labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,atrim=duration={total:.6f}{audio_out}[aout]')
+        parts.append(
+            ''.join(audio_labels)
+            + f'amix=inputs={len(audio_labels)}:duration=longest:dropout_transition=0:normalize=0,'
+              f'alimiter=limit=0.95,aresample={audio_rate},'
+              f'atrim=duration={total:.6f},asetpts=N/SR/TB{audio_out}[aout]')
     cmd += ['-filter_complex',';'.join(parts),'-map','[vout]']
     if audio_labels:cmd += ['-map','[aout]','-c:a','aac','-b:a','192k']
     else:cmd += ['-an']
