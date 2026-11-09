@@ -1,8 +1,8 @@
 """FragForge 0.10.1: Qt multi-track editing workspace (preview uses source player)."""
-import copy, math, os, sys, json, subprocess, struct, threading, re, time
+import copy, math, os, sys, json, subprocess, struct, threading, re, time, tempfile
 from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal, QThread, QTimer, QRectF, QMimeData, QObject, QEvent, QSize
-from PySide6.QtGui import QColor, QPen, QBrush, QFont, QShortcut, QKeySequence, QPainter, QDrag, QPixmap, QImage, QIcon, QMovie
+from PySide6.QtGui import QColor, QPen, QBrush, QFont, QShortcut, QKeySequence, QPainter, QDrag, QPixmap, QImage, QIcon, QMovie, QDesktopServices
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QPushButton,QLabel,QListWidget,QFileDialog,QMessageBox,QSplitter,QGraphicsView,QGraphicsScene,QSlider,QFrame,QInputDialog,QDoubleSpinBox,QScrollArea,QTabWidget,QProgressBar,QComboBox,QToolButton, QAbstractItemView, QCheckBox, QSizePolicy, QLayout, QDialog, QLineEdit, QPlainTextEdit, QListWidgetItem, QStackedLayout)
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QMediaDevices,QSoundEffect,QVideoSink
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -11,7 +11,7 @@ from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage
 from version import DISPLAY_NAME
-from vision_director import installed_models, scan as vision_scan, combat_windows
+from vision_director import installed_models, scan as vision_scan, combat_windows, scene_windows
 from audio_director import scan_audio, corroborate_vision
 from recognition_markers import build_markers, director_report, export_report
 from music_intelligence import scan_library, choose_track, genre_for_request
@@ -351,12 +351,18 @@ class VisionScanWorker(QThread):
     ready=Signal(object)
     failed=Signal(str)
     progress=Signal(int)
-    def __init__(self,path,end,model,audio_enabled=True):
-        super().__init__();self.path=path;self.end=end;self.model=model;self.audio_enabled=audio_enabled;self.cancel_event=threading.Event()
+    def __init__(self,path,end,model,audio_enabled=True,seed_times=(),requested_events=('combat',)):
+        super().__init__();self.path=path;self.end=end;self.model=model
+        self.audio_enabled=audio_enabled;self.seed_times=list(seed_times)
+        self.requested_events=tuple(requested_events)
+        self.cancel_event=threading.Event()
     def cancel(self):self.cancel_event.set()
     def run(self):
         try:
-            result=vision_scan(self.path,self.end,self.model,lambda done,total:self.progress.emit(int(done*75/total)),self.cancel_event,profile=getattr(self,'profile','Balanced'))
+            result=vision_scan(self.path,self.end,self.model,
+                               lambda done,total:self.progress.emit(int(done*75/max(1,total))),
+                               self.cancel_event,profile=getattr(self,'profile','Balanced'),
+                               seed_times=self.seed_times,requested_events=self.requested_events)
             if self.audio_enabled:
                 try:
                     audio=scan_audio(self.path,self.end,lambda pct:self.progress.emit(75+int(pct*.25)),self.cancel_event)
@@ -408,14 +414,16 @@ class Editor(QMainWindow):
         root=QWidget();self.setCentralWidget(root);main=QVBoxLayout(root);main.setContentsMargins(8,8,8,8);main.setSpacing(8)
         header=QHBoxLayout();main.addLayout(header)
         logo=QLabel('◈  ELI STUDIO');logo.setStyleSheet(f'font-size:21px;font-weight:800;color:{CYAN};');header.addWidget(logo)
-        header.addWidget(QLabel('VIDEO EDITOR · v1.0.0 · Eli'));header.addStretch()
+        header.addWidget(QLabel('VIDEO EDITOR · Eli'));header.addStretch()
         for name in ['Project','Edit','Effects','Sounds','Transitions','Titles','Eli']:
             b=self.button(name,lambda checked=False, n=name:self.open_feature(n))
             if name=='Eli':b.setStyleSheet('QPushButton { background:#60353f; color:#fff0f2; border:1px solid #96515e; } QPushButton:hover { background:#79414e; }')
             header.addWidget(b)
         header.addWidget(self.button('↶ Undo',lambda checked=False:self.undo()))
         header.addWidget(self.button('↷ Redo',lambda checked=False:self.redo()))
-        header.addWidget(self.button('📂 Open',self.open_project));header.addWidget(self.button('↥ Export',self.export_video,True))
+        header.addWidget(self.button('📂 Open',self.open_project))
+        header.addWidget(self.button('▶ Rendered Preview',self.rendered_preview))
+        header.addWidget(self.button('↥ Export',self.export_video,True))
         top=QSplitter(Qt.Horizontal);main.addWidget(top,7)
         left=QFrame();ll=QVBoxLayout(left);ll.setContentsMargins(4,4,4,4)
         lhead=QHBoxLayout();ll.addLayout(lhead);lhead.addWidget(QLabel('📁  MEDIA LIBRARY'));lhead.addStretch();lhead.addWidget(self.button('+ Import',self.import_media,True))
@@ -1208,7 +1216,7 @@ class Editor(QMainWindow):
         settings_layout.addWidget(QLabel('Vision model (install separately using Ollama)'))
         settings_layout.addWidget(vision_model)
         vision_help=QLabel('Requires a vision-capable model. Try llava:7b if qwen3-vl:2b returns reasoning only.\n'
-                           'Image estimates are NOT confirmed kills. Scan may take several minutes.')
+                           'Eli estimates activity and scene boundaries from frames. Review before applying.')
         vision_help.setWordWrap(True);settings_layout.addWidget(vision_help)
         install_vision=self.button('Install / update vision AI (Ollama)',lambda:None)
         settings_layout.addWidget(install_vision)
@@ -1251,7 +1259,7 @@ class Editor(QMainWindow):
         settings_layout.addWidget(QLabel('Audio transients help rank combat candidates; they cannot prove kills or identify specific sounds.'))
 
         settings_layout=collapsible_section('04  Highlights & visual effects')
-        settings_layout.addWidget(QLabel('Action-candidate intro (NOT verified kills)'));settings_layout.addWidget(intro_duration)
+        settings_layout.addWidget(QLabel('Eli-estimated action intro'));settings_layout.addWidget(intro_duration)
         for title,widget in [('Number of highlight clips',count),('Highlight duration',length),('Scene sensitivity (lower = more cuts)',sensitivity)]:
             settings_layout.addWidget(QLabel(title));settings_layout.addWidget(widget)
         settings_layout.addWidget(effects);settings_layout.addWidget(sounds);settings_layout.addWidget(speedup)
@@ -1305,15 +1313,20 @@ class Editor(QMainWindow):
             if target_duration.value()>0:
                 work_stage.setText(f'Requested final duration: {target_duration.value():g} seconds')
         results=QListWidget();results.setMinimumHeight(115);settings_layout.addWidget(results)
-        controls=QHBoxLayout();layout.addLayout(controls)
+        # Split action controls into two rows so small displays don't clip them.
+        controls=QVBoxLayout();layout.addLayout(controls)
+        row1=QHBoxLayout();row2=QHBoxLayout()
+        controls.addLayout(row1);controls.addLayout(row2)
         analyze=self.button('Analyze video',lambda:None,True)
         apply=self.button('Apply selected edit',lambda:None);apply.setEnabled(False)
         markers_button=self.button('Review AI markers',lambda:None);markers_button.setEnabled(False)
         cancel_button=self.button('Cancel analysis',lambda:None);cancel_button.setEnabled(False)
         back_button=self.button('← Back to Assistant',lambda checked=False:None) if from_assistant else None
-        if back_button:controls.addWidget(back_button)
+        if back_button:row1.addWidget(back_button,1)
+        row1.addWidget(analyze,1);row1.addWidget(cancel_button,1)
         trace_button=self.button('Eli Processing Trace',lambda:None)
-        controls.addWidget(analyze);controls.addWidget(cancel_button);controls.addWidget(markers_button);controls.addWidget(trace_button);controls.addWidget(apply)
+        row2.addWidget(markers_button,1);row2.addWidget(trace_button,1)
+        row2.addWidget(apply,1)
         state={'cuts':None,'windows':[],'segments':[],'intro':[],'cues':[],'vision':None,'markers':[]}
         start=float(source.get('start',0));end=float(source.get('end',0))
         full_duration,_=probe(source['path'])
@@ -1334,8 +1347,8 @@ class Editor(QMainWindow):
                     'source_end':round(b,3),'output_start':round(position,3),
                     'output_end':round(position+seconds,3),'speed':velocity,
                     'combat_candidates_in_clip':[round(x,2) for x in confirmed if a<=x<=b],
-                    'evidence':('possible combat' if any(a<=x<=b for x in confirmed)
-                                else 'unverified visual/supporting footage')})
+                    'evidence':('Eli estimates combat' if any(a<=x<=b for x in confirmed)
+                                else 'Eli estimates supporting footage')})
                 position+=seconds
             selected=[c for c in self.clips
                       if c.get('track')=='V1' and c.get('eli_auto_montage')]
@@ -1353,6 +1366,10 @@ class Editor(QMainWindow):
                     'vision_model':vision_model.currentText() if vision_enabled.isChecked() else 'not scanned',
                     'vision_samples':len(vision.get('samples',[])),
                     'vision_failed_frames':vision.get('failed_frames',0),
+                    'coarse_frames':vision.get('coarse_frames',0),
+                    'refined_frames':vision.get('refined_frames',0),
+                    'frame_budget':vision.get('max_frames',0),
+                    'estimated_scene_windows':state.get('estimated_scene_windows',[]),
                     'vision_errors':vision.get('errors',[]),
                     'visual_activity_peaks':len(analysis.get('activity_peaks',[])),
                     'combat_candidate_timestamps':confirmed,
@@ -1451,9 +1468,21 @@ class Editor(QMainWindow):
                         return
                     focus=bool(pending and pending.get('focus_kills'))
                     state['user_markers']=list(confirmed)
-                    automatic=combat_windows((state['vision'] or {}).get('samples',[]),full_end) if focus else []
+                    observations=(state['vision'] or {}).get('samples',[])
+                    automatic=combat_windows(observations,full_end) if focus else []
+                    loot_windows=(scene_windows(observations,full_end,event='looting')
+                                  if pending and pending.get('focus_loot') else [])
+                    scene_estimates=automatic if focus else loot_windows
                     if focus and automatic and not confirmed:
                         confirmed=[(a+b)/2 for a,b,_ in automatic]
+                    if not focus and loot_windows and not confirmed:
+                        confirmed=[(a+b)/2 for a,b,_ in loot_windows]
+                    if state.get('user_markers'):
+                        scene_estimates=[(max(0.,t-2.5),min(full_end,t+5.),1.)
+                                         for t in state['user_markers']]
+                    state['estimated_scene_windows']=[
+                        [round(a,2),round(b,2),round(conf,3)]
+                        for a,b,conf in scene_estimates]
                     state['combat_markers']=list(confirmed)
                     if focus and not confirmed and not allow_unverified.isChecked():
                         state['windows']=[]
@@ -1485,7 +1514,8 @@ class Editor(QMainWindow):
                            if focus and confirmed else cuts.get('activity_peaks',[]))
                     _,segments=precision_montage(
                         base,peaks,target_duration.value(),playback_speed.value(),
-                        runtime(intro),combat_markers=confirmed if focus else ())
+                        runtime(intro),combat_markers=confirmed if focus else (),
+                        action_windows=scene_estimates)
                     state['supporting_footage']=False
                     if not segments and focus and confirmed:
                         # Expand to clean source gameplay, prioritizing known markers,
@@ -1493,7 +1523,8 @@ class Editor(QMainWindow):
                         fallback_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
                         _,segments=precision_montage(
                             fallback_base,peaks,target_duration.value(),playback_speed.value(),
-                            runtime(intro),combat_markers=confirmed)
+                            runtime(intro),combat_markers=confirmed,
+                            action_windows=scene_estimates)
                         state['supporting_footage']=bool(segments)
                     # Never claim supporting footage is verified combat.
                     state['intro']=intro;state['segments']=segments
@@ -1553,8 +1584,8 @@ class Editor(QMainWindow):
                 rate=state['segments'][i][2] if state['segments'] else 1.
                 likely_combat=bool('confirmed' in locals() and any(a<=t<=b for t in confirmed))
                 likely_motion=any(a<=t<=b for t,_ in cuts.get('activity_peaks',[]))
-                reason=('possible combat — not verified' if likely_combat else
-                        'visual activity — not verified' if likely_motion else
+                reason=('Eli estimates — combat' if likely_combat else
+                        'Eli estimates — activity' if likely_motion else
                         'supporting gameplay')
                 result_output=sum((end-start)/max(.01,state['segments'][j][2])
                                   for j,(start,end) in enumerate(windows[:i])) + runtime(state['intro'])
@@ -1562,7 +1593,7 @@ class Editor(QMainWindow):
                     f'OUT {tc(result_output)}  |  SOURCE {tc(a)} → {tc(b)}'
                     f' ({(b-a)/max(.01,rate):.1f}s at {rate:g}×) — {reason}')
             if state['segments']:
-                status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
+                status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} Eli combat estimates.' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
             analysis_bar.setValue(100);work_message.setText('Your edit is prepared. Review it before applying changes.')
@@ -1638,7 +1669,13 @@ class Editor(QMainWindow):
                 return
             status.setText('Vision AI scanning sampled gameplay frames…')
             analysis_bar.setRange(0,100);analysis_bar.setValue(0)
-            worker=VisionScanWorker(source['path'],full_end,model,audio_enabled.isChecked())
+            desired=('combat',) if pending and pending.get('focus_kills') else ()
+            if pending and pending.get('focus_loot'):
+                desired+=('looting',)
+            worker=VisionScanWorker(
+                source['path'],full_end,model,audio_enabled.isChecked(),
+                seed_times=cuts.get('activity_peaks',[]),
+                requested_events=desired or ('combat',))
             worker.profile=getattr(self,'_ai_performance_mode','Accelerated')
             self._vision_scan_worker=worker
             worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))
@@ -1779,7 +1816,7 @@ class Editor(QMainWindow):
                 # Manual timeline clips retain their user-selected levels.
                 if clip.get('audio') and music_path.text().strip():
                     clip['volume']=.42
-                clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Eli edit — AI candidate, not verified kill')
+                clip['label']=('Eli estimates — intro' if part=='intro' else 'Eli estimates — gameplay scene')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
                 # Eli Audio Intelligence: cuts and merges are NEVER sound events.
@@ -1838,14 +1875,14 @@ class Editor(QMainWindow):
                 return
             summary=(f'Applied {len(timeline)} video clips, {added_fx} visual effects and '
                      f'{added_sfx} sound cues; verified timeline {actual_total:.2f}s ({actual_total/60:.2f} min). '
-                     f'Intro: {runtime(intro):.1f}s of UNVERIFIED action candidates. '
-                     'Activity candidates are NOT verified kills. Review before exporting. '
+                     f'Intro: {runtime(intro):.1f}s of Eli-estimated action scenes. '
+                     'Review scene estimates before exporting. '
                      'Export defaults: 0.5s scene dissolves and 1.0s final fade to black. '
                      'The in-app source preview does not show these export-only transitions.')
             if music_path.text().strip():
                 summary+='\nMusic: '+Path(music_path.text().strip()).stem
             if pending and pending.get('focus_kills'):
-                summary+=('\nCOMBAT: user-confirmed timestamps used (not automatic kill recognition).' if combat_markers.text().strip() else '\nKILLS NOT VERIFIED: unverified action montage.')
+                summary+=('\nCOMBAT: user-provided timestamps.' if combat_markers.text().strip() else '\nCOMBAT: Eli scene estimates.')
             if errors and any(e.startswith('Background music:') for e in errors):
                 self.clips=previous_clips
                 self.selected=None
@@ -2638,6 +2675,52 @@ class Editor(QMainWindow):
         self.autosave_project()
         if self.fullscreen_window is not None:self.restore_preview()
         super().closeEvent(event)
+    def rendered_preview(self):
+        """Render a real H.264 preview with the exact same FFmpeg transitions.
+
+        The normal Qt timeline monitor displays raw source clips; it cannot
+        show FFmpeg xfade. This preview intentionally renders the full edit.
+        """
+        if not self.clips:
+            QMessageBox.information(self,'Rendered Preview','Add footage to V1 first.')
+            return
+        worker=getattr(self,'_render_preview_worker',None)
+        if worker is not None and worker.isRunning():
+            QMessageBox.information(self,'Rendered Preview','A preview render is already running.')
+            return
+        target=os.path.join(tempfile.gettempdir(),
+                            f'Eli_Studio_Preview_{os.getpid()}_{time.monotonic_ns()}.mp4')
+        self.player.pause()
+        dialog=QDialog(self)
+        dialog.setWindowTitle('Eli — Rendering actual transitions')
+        dialog.setMinimumWidth(440)
+        layout=QVBoxLayout(dialog)
+        status=QLabel('Rendering at 720p / 30fps with the final export filter graph...')
+        progress=QProgressBar()
+        progress.setRange(0,100)
+        layout.addWidget(status);layout.addWidget(progress)
+        dialog.show()
+        self._render_preview_dialog=dialog
+        # Use exactly the same export_layers function as a full MP4 export.
+        preview_worker=ExportWorker(self.clips,target,'cpu','fast',1280,720,30)
+        self._render_preview_worker=preview_worker
+        def update(percent):
+            progress.setValue(percent)
+            status.setText(f'Rendering real scene crossfades and final fades: {percent}%')
+        def complete(path):
+            dialog.close()
+            self.note.setText('Rendered preview ready: '+path)
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+                QMessageBox.information(self,'Rendered Preview',
+                    'MP4 created. Open in your video player:\n'+path)
+        def failure(message):
+            dialog.close()
+            QMessageBox.critical(self,'Rendered Preview failed',message)
+        preview_worker.progress.connect(update)
+        preview_worker.success.connect(complete)
+        preview_worker.failed.connect(failure)
+        preview_worker.start()
+
     def export_video(self):
         if not self.clips:QMessageBox.information(self,'Export','Import and insert a video first.');return
         path,_=QFileDialog.getSaveFileName(self,'Export MP4','Eli-Studio-export.mp4','MP4 (*.mp4)')

@@ -6,9 +6,9 @@ import threading
 import time
 
 PROFILES = {
-    'Eco': {'budget_gb': 2, 'num_ctx': 1024, 'max_frames': 12, 'image_width': 320},
-    'Balanced': {'budget_gb': 4, 'num_ctx': 2048, 'max_frames': 24, 'image_width': 448},
-    'Accelerated': {'budget_gb': 8, 'num_ctx': 4096, 'max_frames': 48, 'image_width': 512},
+    'Eco': {'budget_gb': 2, 'num_ctx': 1024, 'max_frames': 24, 'image_width': 320},
+    'Balanced': {'budget_gb': 4, 'num_ctx': 2048, 'max_frames': 48, 'image_width': 448},
+    'Accelerated': {'budget_gb': 8, 'num_ctx': 4096, 'max_frames': 96, 'image_width': 512},
 }
 _lock = threading.RLock()
 _active = None

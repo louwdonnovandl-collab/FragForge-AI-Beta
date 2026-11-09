@@ -77,17 +77,82 @@ def classify_frame(path,seconds,model,profile="Balanced"):
             errors.append(str(exc))
     raise ValueError('Vision classification failed: '+'; '.join(errors))
 
-def scan(path,end,model,progress=None,cancel=None,max_frames=None,profile="Balanced"):
-    # Uniform samples avoid relying on motion peaks, which previously returned zero.
-    # 48 frames across a 47-minute source is only a coarse first pass.
-    max_frames = max_frames or PROFILES[profile]["max_frames"]
-    count=max(1,min(max_frames,int(end/12)+1))
-    samples=[min(end-0.2,(i+.5)*end/count) for i in range(count)]
+def scan(path,end,model,progress=None,cancel=None,max_frames=None,
+         profile="Balanced",seed_times=(),requested_events=("combat",)):
+    """Use a 2x visual-frame budget with targeted event-boundary refinement.
+
+    Phase 1 broadly samples the recording and known motion peaks. Phase 2
+    inspects up to half the total budget near promising scenes at 3s spacing.
+    Estimates are not verified gameplay outcomes. Limits are per profile.
+    """
+    from ollama_memory import release_model
+    end=max(.25,float(end))
+    budget=max(1,int(max_frames or PROFILES[profile]["max_frames"]))
+    coarse_budget=max(1,(budget+1)//2)
+    coarse_uniform_count=max(1,min(coarse_budget,int(end/12)+1))
+    broad=[max(0.,min(end-.2,(i+.5)*end/coarse_uniform_count))
+           for i in range(coarse_uniform_count)]
+    # If uniform sampling has spare slots, include high-motion positions.
+    extra_slots=max(0,coarse_budget-len(broad))
+    for second,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
+        t=max(0.,min(end-.2,float(second)))
+        if all(abs(t-existing)>=5. for existing in broad):
+            broad.append(t)
+            extra_slots-=1
+        if extra_slots<=0:
+            break
+    broad=sorted(set(round(t,2) for t in broad))
+    remaining=max(0,budget-len(broad))
     try:
-        return _scan_samples(path, samples, model, progress, cancel, profile)
+        coarse=_scan_samples(
+            path,broad,model,
+            (lambda done, _total:progress(done,budget)) if progress else None,
+            cancel,profile)
+        desired=set(requested_events or ('combat',))
+        hits=sorted(
+            (s for s in coarse['samples'] if s.get('event') in desired
+             and float(s.get('confidence',0))>=.65),
+            key=lambda s:-float(s.get('confidence',0)))
+        anchors=[]
+        for hit in hits:
+            moment=float(hit['time'])
+            if all(abs(moment-previous)>=22. for previous in anchors):
+                anchors.append(moment)
+            if len(anchors)>=5:
+                break
+        times=[]
+        # 3 second step adds observations before, during and after action.
+        # This avoids trimming a fight to a single still-image timestamp.
+        for anchor in anchors:
+            for delta in range(-4,5):
+                moment=round(max(0.,min(end-.2,anchor+delta*3.)),2)
+                if (all(abs(moment-x['time'])>=1. for x in coarse['samples'])
+                        and moment not in times):
+                    times.append(moment)
+        times=sorted(times[:remaining])
+        if times:
+            fine=_scan_samples(
+                path,times,model,
+                (lambda done,_total:progress(len(broad)+done,budget))
+                if progress else None,cancel,profile)
+        else:
+            fine={'samples':[],'errors':[],'failed_frames':0}
+        observations={float(x['time']):x for x in coarse['samples']}
+        observations.update((float(x['time']),x) for x in fine['samples'])
+        result=dict(coarse)
+        result['samples']=sorted(observations.values(),key=lambda x:float(x['time']))
+        result['coarse_frames']=len(coarse['samples'])
+        result['refined_frames']=len(fine['samples'])
+        result['max_frames']=budget
+        result['failed_frames']+=fine.get('failed_frames',0)
+        result['errors']+=fine.get('errors',[])
+        result['scan_method']='coarse+3s event-boundary sampling'
+        if progress:
+            progress(budget,budget)
+        return result
     finally:
-        from ollama_memory import release_model
         release_model(model)
+
 
 def _scan_samples(path, samples, model, progress=None, cancel=None, profile="Balanced"):
     found=[];errors=[]
@@ -109,7 +174,57 @@ def _scan_samples(path, samples, model, progress=None, cancel=None, profile="Bal
         if progress:progress(i+1,count)
     return {'samples':found,'errors':errors[:3],'failed_frames':len(errors),'model':model}
 
+def scene_windows(samples,source_end,event="combat",half_width=9.,
+                  threshold=.65,context_before=2.,context_after=2.):
+    """Estimated activity boundaries from repeated frames and event changes.
+
+    Output: (source_begin, source_end, confidence). No kill assertion.
+    """
+    rows=sorted((x for x in samples if "time" in x),
+                key=lambda x:float(x['time']))
+    positive=[x for x in rows if x.get('event')==event
+              and float(x.get('confidence',0))>=threshold]
+    groups=[]
+    for item in positive:
+        t=float(item['time'])
+        if groups:
+            previous=float(groups[-1][-1]['time'])
+            negatives=sum(1 for x in rows
+                          if previous<float(x['time'])<t
+                          and x.get('event')!=event
+                          and float(x.get('confidence',0))>=.6)
+            if t-previous<=6.5 and negatives<2:
+                groups[-1].append(item)
+                continue
+        groups.append([item])
+    intervals=[]
+    for group in groups:
+        first=float(group[0]['time'])
+        last=float(group[-1]['time'])
+        before=[float(x['time']) for x in rows
+                if first-6.<=float(x['time'])<first
+                and x.get('event')!=event
+                and float(x.get('confidence',0))>=.55]
+        after=[float(x['time']) for x in rows
+               if last<float(x['time'])<=last+6.
+               and x.get('event')!=event
+               and float(x.get('confidence',0))>=.55]
+        start=((max(before)+first)/2-context_before
+               if before else first-half_width)
+        stop=((last+min(after))/2+context_after
+              if after else last+half_width)
+        intervals.append((max(0.,start),min(float(source_end),stop),
+                          max(float(x.get('confidence',0)) for x in group)))
+    merged=[]
+    for start,stop,conf in intervals:
+        if merged and start<=merged[-1][1]:
+            a,b,p=merged[-1]
+            merged[-1]=(a,max(stop,b),max(conf,p))
+        else:
+            merged.append((start,stop,conf))
+    return merged
+
+
 def combat_windows(samples,source_end,half_width=9.):
-    # Never claim these are confirmed kills.
-    hits=[x for x in samples if x.get('event')=='combat' and x.get('confidence',0)>=.65]
-    return [(max(0.,x['time']-half_width),min(source_end,x['time']+half_width),float(x['confidence'])) for x in hits]
+    return scene_windows(samples,source_end,event='combat',half_width=half_width)
+

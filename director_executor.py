@@ -97,7 +97,7 @@ def intro_from_activity(segments, peaks, seconds):
     return selected
 
 
-def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0, combat_markers=()):
+def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0, combat_markers=(), action_windows=()):
     """Select active excerpts for a duration-constrained montage.
 
     Activity peaks are visual-motion candidates, not confirmed kills. Returns
@@ -118,8 +118,16 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
     # Build complete activity sequences instead of cutting every marker into
     # fixed six-second chunks. Group nearby peaks and retain context on both sides.
     candidates=[]
+    scene_spans=[(float(x),float(y),float(conf)) for x,y,conf in action_windows
+                 if float(y)>float(x)]
     for a,b in eligible:
-        local=sorted((float(t),float(score)) for t,score in peaks if a<=float(t)<b)
+        for x,y,confidence in scene_spans:
+            left=max(a,x);right=min(b,y)
+            if right-left>.3:
+                candidates.append((left,right,1000.+100.*confidence))
+        local=sorted((float(t),float(score)) for t,score in peaks
+                     if a<=float(t)<b and not any(u<=float(t)<=v
+                                               for u,v,_ in scene_spans))
         groups=[]
         for t,score in local:
             if groups and t-groups[-1][-1][0]<=4.*speed:
@@ -206,7 +214,6 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
             take=min(b-a,remaining*speed)
             if take>.03:
                 selected.append((a,a+take,speed));remaining-=take/speed
-            if remaining<=.03:break
             if remaining<=.03:break
     selected.sort(key=lambda x:x[0])
     # Duration is measured in output seconds after speed adjustment.
