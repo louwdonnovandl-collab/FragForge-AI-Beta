@@ -7,26 +7,43 @@ _DURATION_TOKEN = re.compile(
 
 
 def extract_output_duration(text):
-    """Extract montage/video runtime; ignore transition, intro and fade lengths."""
+    """Prefer total video runtime over intro, transition and end-fade timings."""
     t = str(text or '').lower().replace('×', 'x')
-    choices = []
+    candidates = []
     for match in _DURATION_TOKEN.finditer(t):
-        before = t[max(0, match.start()-85):match.start()]
-        after = t[match.end():match.end()+65]
-        # "1-second fade to black", "0.5-second crossfade",
-        # "2 seconds before combat" are not total montage lengths.
+        before = t[max(0,match.start()-90):match.start()]
+        after = t[match.end():match.end()+75]
+        # This number belongs to a transition, fade, intro or combat padding.
         if re.match(
-                r'\s*(?:(?:smooth|scene[- ]to[- ]scene|final|ending|audio|video|black)\s+)?'
-                r'(?:crossfades?|dissolves?|transitions?|fades?|fade[- ]outs?|'
-                r'intro|pre[- ]?roll|before|after)\b', after):
+            r'\s*(?:(?:smooth|scene[- ]to[- ]scene|final|ending|audio|black)\s+)?'
+            r'(?:crossfades?|dissolves?|transitions?|fades?|fade[- ]outs?|'
+            r'intro|pre[- ]?roll|before|after)\b', after):
             continue
         if re.search(
-                r'\b(?:crossfade|transition|dissolve|fade|fade[- ]out|intro|'
-                r'before|after|last)\s*(?:(?:of|for|over|during|lasting|the)\s*)?
-    """Extract explicit user constraints independently of the conversational AI.
+            r'\b(?:fade|crossfade|transition|dissolve|intro|before|after|last)\s*'
+            r'(?:(?:to|from|of|for|over|during|the)\s*){0,3}$',
+            before[-55:]):
+            continue
+        seconds = float(match.group(1).replace(',', '.'))
+        if match.group(2).startswith('min'):
+            seconds *= 60.
+        score = 0
+        if re.match(
+            r'\s*(?:[- ]?\s*(?:long\s+)?(?:video|montage|edit|clip|reel|'
+            r'highlight|gaming\s+highlight)|target|runtime|duration)\b',
+            after):
+            score += 10
+        if re.search(
+            r'\b(?:target|duration|runtime|length|total|exactly|'
+            r'video|montage|output|export|create|make|build|edit)\b',
+            before[-75:]):
+            score += 4
+        candidates.append((score, -match.start(), seconds))
+    return max(1., min(10800., max(candidates)[2])) if candidates else 0.
 
-    Never let an LLM rewrite a numeric duration or speed requested by the user.
-    """
+
+def interpret_request(text):
+    """Extract explicit user constraints without LLM changes to numeric input."""
     t = text.lower().replace('×', 'x')
     intro = re.search(r'(?:intro|opening)[^\n.]{0,65}?(\d{1,2})\s*(?:seconds?|secs?|s\b)', t)
     intro_alt = re.search(r'(\d{1,2})\s*(?:seconds?|secs?|s\b)[^\n.]{0,40}?(?:intro|opening)', t)
