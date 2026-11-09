@@ -68,6 +68,11 @@ jobs:
             if ($downloaded) { break }
           }
           if (-not $downloaded) { throw 'All FFmpeg download sources failed' }
+      - name: Verify Eli scene crossfades and final fades
+        shell: pwsh
+        run: |
+          python test_eli_transitions.py
+          if ($LASTEXITCODE -ne 0) { throw 'Eli transition regression test failed; not packaging this build.' }
       - name: Build Windows app
         shell: pwsh
         run: |
