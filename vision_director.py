@@ -95,6 +95,8 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
     # If uniform sampling has spare slots, include high-motion positions.
     extra_slots=max(0,coarse_budget-len(broad))
     for second,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
+        if extra_slots<=0:
+            break
         t=max(0.,min(end-.2,float(second)))
         if all(abs(t-existing)>=5. for existing in broad):
             broad.append(t)
@@ -129,6 +131,25 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
                 if (all(abs(moment-x['time'])>=1. for x in coarse['samples'])
                         and moment not in times):
                     times.append(moment)
+        # Even when no combat is recognized during the coarse pass, use the
+        # extra 2x budget on high-motion candidates and interleaved times.
+        # Otherwise a difficult recording would silently receive only the
+        # previous version's coarse sampling count.
+        if len(times)<remaining:
+            extras=[float(t) for t,_ in sorted(
+                seed_times,key=lambda pair:-float(pair[1]))]
+            if coarse_uniform_count>0:
+                extras.extend((i+.25)*end/coarse_uniform_count
+                              for i in range(coarse_uniform_count))
+                extras.extend((i+.75)*end/coarse_uniform_count
+                              for i in range(coarse_uniform_count))
+            for t in extras:
+                t=round(max(0.,min(end-.2,t)),2)
+                if (all(abs(t-x['time'])>=.5 for x in coarse['samples'])
+                        and all(abs(t-existing)>=.5 for existing in times)):
+                    times.append(t)
+                if len(times)>=remaining:
+                    break
         times=sorted(times[:remaining])
         if times:
             fine=_scan_samples(
