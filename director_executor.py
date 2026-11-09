@@ -97,7 +97,7 @@ def intro_from_activity(segments, peaks, seconds):
     return selected
 
 
-def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0):
+def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0, combat_markers=()):
     """Select active excerpts for a duration-constrained montage.
 
     Activity peaks are visual-motion candidates, not confirmed kills. Returns
@@ -106,6 +106,14 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
     speed=max(.25,float(speed))
     budget=max(0.,float(target_seconds)-max(0.,float(intro_seconds)))
     eligible=[(float(a),float(b)) for a,b,_ in segments if b-a>.3]
+    # For combat-focused requests, begin within a few seconds of the first
+    # estimated fight instead of filling 20-30 seconds with earlier gameplay.
+    # These are candidates, NOT verified kills.
+    markers=sorted(float(t) for t in combat_markers)
+    if markers:
+        first_action=max(0.,markers[0]-3.*speed)
+        eligible=[(max(a,first_action),b) for a,b in eligible
+                  if b-max(a,first_action)>.3]
     if not eligible or budget<=0:return [],[]
     # Build complete activity sequences instead of cutting every marker into
     # fixed six-second chunks. Group nearby peaks and retain context on both sides.
@@ -152,27 +160,53 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
             if cursor>=b:break
         if cursor<b-.03:candidates.append((cursor,b,0.))
     selected=[];remaining=budget
-    # Prefer entire high-priority events. Avoid cutting a fight in half just
-    # to use the last few seconds of the montage budget.
+    # Preserve complete high-priority action moments whenever they fit.
     priority=sorted((c for c in candidates if c[2]>0),key=lambda c:-c[2])
     filler=sorted((c for c in candidates if c[2]<=0),key=lambda c:c[0])
     for a,b,_ in priority:
         length=(b-a)/speed
         if length<=remaining+.001:
             selected.append((a,b,speed));remaining-=length
-    for a,b,_ in filler:
-        if remaining<=.03:break
+    # If every candidate is longer than the entire budget, allow the best
+    # partial candidate as a last resort, and disclose that it is unverified.
+    if not selected and priority and remaining>.03:
+        a,b,_=priority[0]
         take=min(b-a,remaining*speed)
-        if take>.03:
-            selected.append((a,a+take,speed));remaining-=take/speed
-    # If no other usable footage can fill the budget, allow one last partial
-    # activity segment, but never mislabel it as a complete combat event.
+        selected.append((a,a+take,speed));remaining-=take/speed
+    if markers:
+        # Never place unrelated source footage before the first selected
+        # activity segment. Fill remaining runtime in short, nearby pieces.
+        earliest=min((a for a,b,s in selected),default=eligible[0][0])
+        chunks=[]
+        for a,b,_ in filler:
+            a=max(a,earliest)
+            while b-a>.03:
+                end=min(b,a+5.*speed)
+                proximity=min((max(u-end,a-v,0.) for u,v,_ in selected),
+                              default=0.)
+                chunks.append((proximity,a,end))
+                a=end
+        chunks.sort(key=lambda item:(item[0],item[1]))
+        for _,a,b in chunks:
+            if remaining<=.03:break
+            take=min(b-a,remaining*speed)
+            if take>.03:
+                selected.append((a,a+take,speed));remaining-=take/speed
+    else:
+        for a,b,_ in filler:
+            if remaining<=.03:break
+            take=min(b-a,remaining*speed)
+            if take>.03:
+                selected.append((a,a+take,speed));remaining-=take/speed
+    # Keep duration validation strict; never claim a 60-second montage when
+    # the available source cannot actually supply sixty seconds.
     if remaining>.03:
         for a,b,_ in priority:
             if any(not (b<=u or a>=v) for u,v,_ in selected):continue
             take=min(b-a,remaining*speed)
             if take>.03:
                 selected.append((a,a+take,speed));remaining-=take/speed
+            if remaining<=.03:break
             if remaining<=.03:break
     selected.sort(key=lambda x:x[0])
     # Duration is measured in output seconds after speed adjustment.

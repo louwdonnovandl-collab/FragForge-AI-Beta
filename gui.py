@@ -1373,14 +1373,25 @@ class Editor(QMainWindow):
                     # restricting base to only marker windows caused mid-fight cuts
                     # and unnecessary insufficient-footage failures.
                     # Duration means FINAL playback runtime, not source footage seconds.
-                    peaks=([(t,1000.) for t in confirmed] + [(t,s) for t,s in cuts.get('activity_peaks',[]) if not focus or any(abs(t-c)<=8 for c in confirmed)]) if (focus and confirmed) else cuts.get('activity_peaks',[])
-                    _,segments=precision_montage(base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
+                    # Preserve corroborated candidates, then include other
+                    # action-heavy visual peaks. The old ±8s filter removed
+                    # most useful alternatives and filled time with idle footage.
+                    peaks=([(t,1000.) for t in confirmed]
+                           + [(t,min(80.,float(score)))
+                              for t,score in cuts.get('activity_peaks',[])
+                              if float(score)>=4. and not any(abs(t-c)<2. for c in confirmed)]
+                           if focus and confirmed else cuts.get('activity_peaks',[]))
+                    _,segments=precision_montage(
+                        base,peaks,target_duration.value(),playback_speed.value(),
+                        runtime(intro),combat_markers=confirmed if focus else ())
                     state['supporting_footage']=False
                     if not segments and focus and confirmed:
                         # Expand to clean source gameplay, prioritizing known markers,
                         # and explicitly disclose that supporting clips are unverified.
                         fallback_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
-                        _,segments=precision_montage(fallback_base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
+                        _,segments=precision_montage(
+                            fallback_base,peaks,target_duration.value(),playback_speed.value(),
+                            runtime(intro),combat_markers=confirmed)
                         state['supporting_footage']=bool(segments)
                     # Never claim supporting footage is verified combat.
                     state['intro']=intro;state['segments']=segments
@@ -1411,8 +1422,11 @@ class Editor(QMainWindow):
 
             for i,(a,b) in enumerate(windows):
                 rate=state['segments'][i][2] if state['segments'] else 1.
-                has_marker=any(a<=t<=b for t,_ in ([(t,1000.) for t in confirmed] if 'confirmed' in locals() and confirmed else cuts.get('activity_peaks',[])))
-                reason='activity candidate — verify event' if has_marker else 'supporting gameplay'
+                likely_combat=bool('confirmed' in locals() and any(a<=t<=b for t in confirmed))
+                likely_motion=any(a<=t<=b for t,_ in cuts.get('activity_peaks',[]))
+                reason=('possible combat — not verified' if likely_combat else
+                        'visual activity — not verified' if likely_motion else
+                        'supporting gameplay')
                 results.addItem(f'{tc(a)}  →  {tc(b)}  ({b-a:.1f}s at {rate:g}×) — {reason}')
             if state['segments']:
                 status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
@@ -1574,7 +1588,10 @@ class Editor(QMainWindow):
                 f'Supporting footage: {"Yes — unverified gameplay" if state.get("supporting_footage") else "No extra fallback needed"}\n'
                 f'Visual effects: {"Verified placements only" if effects.isChecked() else "None (no verified event mapping)"}\n'
                 f'Music: {"Selected" if music_path.text().strip() else "None"}\n'
-                f'Gameplay audio: {"Balanced with music" if music_path.text().strip() else "Preserved"}\n\n'
+                f'Gameplay audio: {"Balanced with music" if music_path.text().strip() else "Preserved"}\n'
+                f'Crossfades: {max(0,len(windows)+len(state["intro"])-1)} scene merges, 0.5s each\n'
+                'Ending: 1.0s fade to black and gameplay-audio fade\n'
+                'Note: crossfades are rendered in the exported MP4; the live source preview shows hard cuts.\n\n'
                 'Approve this plan before changing the timeline?')
             if decision!=QMessageBox.Yes:return
             if pending and pending.get('focus_kills') and not combat_markers.text().strip() and not combat_windows((state['vision'] or {}).get('samples',[]),full_end) and not allow_unverified.isChecked():
@@ -1690,7 +1707,8 @@ class Editor(QMainWindow):
                      f'{added_sfx} sound cues; verified timeline {actual_total:.2f}s ({actual_total/60:.2f} min). '
                      f'Intro: {runtime(intro):.1f}s of UNVERIFIED action candidates. '
                      'Activity candidates are NOT verified kills. Review before exporting. '
-                     'Export defaults: 0.5s scene dissolves and 1.0s final fade to black.')
+                     'Export defaults: 0.5s scene dissolves and 1.0s final fade to black. '
+                     'The in-app source preview does not show these export-only transitions.')
             if music_path.text().strip():
                 summary+='\nMusic: '+Path(music_path.text().strip()).stem
             if pending and pending.get('focus_kills'):

@@ -154,8 +154,21 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
             raw=(data.get('message') or {}).get('content','') if endpoint=='/api/chat' else data.get('response','')
             answer=clean_reply(raw)
             if answer:
-                # Keep reasoning private; display only the final answer.
+                # Never display invented numeric edit targets or music checks.
+                # The deterministic parser, not Ollama, owns these constraints.
                 answer=re.sub(r'\s+', ' ', answer).strip()
+                if intent.duration_seconds is not None:
+                    targets=re.findall(
+                        r'\b(\d+(?:\.\d+)?)\s*[- ]?\s*'
+                        r'(seconds?|minutes?)\s*(?:target|long|video|montage|edit)\b',
+                        answer, re.I)
+                    if any(abs(float(v)*(60 if u.startswith('minute') else 1)
+                               -intent.duration_seconds)>.1 for v,u in targets):
+                        return describe_intent(intent)[:520]
+                if intent.music_policy == 'none' and re.search(
+                        r'\b(?:check|verify|find|select|add|include)\b'
+                        r'[^.!?]{0,45}\bmusic\b',answer,re.I):
+                    return describe_intent(intent)[:520]
                 sentences=re.split(r'(?<=[.!?])\s+',answer)
                 return ' '.join(sentences[:2])[:380]
             errors.append(endpoint+': empty visible response; done_reason='+str(data.get('done_reason')))
