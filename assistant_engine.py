@@ -64,7 +64,7 @@ def describe_plan(p):
         'Create intro: '+(str(p['intro_seconds'])+' seconds' if p['intro_seconds'] else 'Not requested'),
         'Focus on kills: '+yes(p.get('focus_kills',False)),
         'Focus on looting: '+yes(p.get('focus_loot',False)),
-        'Fade transition: '+yes(p.get('fade_transition',False)),
+        'Fade transition: 0.5s crossfade between AI cuts; 1.0s fade to black at end (default unless overridden)',
         '',
         'SUPPORTED NOW: scene/motion analysis, long-form cuts, 2× pacing, fades, short-montage effects and soundboard.',
         'NOT YET AUTOMATED: speech transcription, semantic gameplay events, context-sensitive long-form effects, image-generated intros.',

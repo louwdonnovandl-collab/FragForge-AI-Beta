@@ -1629,9 +1629,12 @@ class Editor(QMainWindow):
             for i,(part,a,b,rate) in enumerate(timeline):
                 clip=copy.deepcopy(source)
                 clip.update(start=a,end=b,at=position,track='V1',speed=rate)
-                # Short, bounded fades soften automatic montage boundaries without
-                # altering the requested final playback duration.
-                clip['fade']=min(.18, max(0., length_hint / 5.0)) if (length_hint := (b-a)/max(rate,.1)) > .35 else 0.
+                # Render-only 0.5s scene dissolves preserve the exact timeline length.
+                # The last clip fades smoothly to black over its final second.
+                clip['fade']=0.
+                clip['transition']='fade'
+                clip['crossfade_seconds']=.5
+                clip['eli_end_fade']=(i==len(timeline)-1)
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
                 if clip.get('audio') and music_path.text().strip():
@@ -1696,7 +1699,8 @@ class Editor(QMainWindow):
             summary=(f'Applied {len(timeline)} video clips, {added_fx} visual effects and '
                      f'{added_sfx} sound cues; verified timeline {actual_total:.2f}s ({actual_total/60:.2f} min). '
                      f'Intro: {runtime(intro):.1f}s of UNVERIFIED action candidates. '
-                     'Activity candidates are NOT verified kills. Review before exporting.')
+                     'Activity candidates are NOT verified kills. Review before exporting. '
+                     'Export defaults: 0.5s scene dissolves and 1.0s final fade to black.')
             if music_path.text().strip():
                 summary+='\nMusic: '+Path(music_path.text().strip()).stem
             if pending and pending.get('focus_kills'):

@@ -70,31 +70,43 @@ def nvenc_available():
 def export_layers(clips, destination, encoder='auto', quality='balanced', progress=None, width=1280, height=720, fps=30):
     """Composite V1/V2/V3 and mix A1/A2 using FFmpeg; 1280x720/30fps."""
     if width not in (1280,1920,2560,3840) or height not in (720,1080,1440,2160) or fps not in (30,60):raise ValueError('Unsupported export settings')
-    # Render-only timeline normalization: preserve saved project coordinates.
-    # Consecutive V1 shots are overlapped unless a hard cut is requested.
+    # Render-only pre-roll: 0.5s dissolves without shortening the timeline.
+    # Read the next clip slightly earlier, while keeping its original end time.
+    # A full-opacity outgoing shot under the incoming alpha fade creates a
+    # proper dissolve rather than two simultaneous fades dipping toward black.
     clips = [dict(c) for c in clips]
     primary = sorted((c for c in clips if c.get('track') == 'V1' and c.get('kind') != 'effect'),
                      key=lambda c: float(c.get('at', 0)))
-    accumulated = 0.0
+    for c in primary:
+        length = (float(c['end']) - float(c['start'])) / max(.01, float(c.get('speed', 1)))
+        c['fade_in'] = 0.
+        c['fade_out'] = 0.
+        c['audio_fade_in'] = 0.
+        c['audio_fade_out'] = 0.
+        c['end_fade'] = min(1., length) if c is primary[-1] and c.get('eli_end_fade', False) else 0.
     for previous, following in zip(primary, primary[1:]):
         boundary = float(following['at'])
-        previous_end = float(previous['at']) + (float(previous['end']) - float(previous['start'])) / max(.01, float(previous.get('speed', 1)))
-        gap = boundary - previous_end
+        prev_length = (float(previous['end']) - float(previous['start'])) / max(.01, float(previous.get('speed', 1)))
+        prev_end = float(previous['at']) + prev_length
         mode = str(following.get('transition', 'fade')).lower()
-        if mode in ('cut', 'hard cut', 'none') or abs(gap) > .04:
+        if mode in ('cut', 'hard cut', 'none') or abs(boundary - prev_end) > .04:
             continue
-        previous_duration = (float(previous['end']) - float(previous['start'])) / max(.01, float(previous.get('speed', 1)))
-        next_duration = (float(following['end']) - float(following['start'])) / max(.01, float(following.get('speed', 1)))
-        overlap = min(.35, previous_duration / 3, next_duration / 3)
+        rate = max(.01, float(following.get('speed', 1)))
+        next_length = (float(following['end']) - float(following['start'])) / rate
+        desired = max(0., float(following.get('crossfade_seconds', .5)))
+        overlap = min(desired, prev_length / 2, next_length / 2,
+                      float(following['start']) / rate, boundary)
         if overlap <= .02:
             continue
-        for item in clips:
-            if float(item.get('at', 0)) >= boundary - .001:
-                item['at'] = float(item['at']) - overlap
-        # Crossfade both pictures and their accompanying audio over the overlap.
-        previous['fade'] = max(float(previous.get('fade', 0)), overlap)
-        following['fade'] = max(float(following.get('fade', 0)), overlap)
-        accumulated += overlap
+        following['start'] = float(following['start']) - overlap * rate
+        following['at'] = boundary - overlap
+        following['fade_in'] = overlap
+        following['audio_fade_in'] = overlap
+        previous['audio_fade_out'] = overlap
+    # Apply an end fade to the final V1 clip, not to every cut.
+    if primary and primary[-1].get('eli_end_fade', False):
+        primary[-1]['fade_out'] = min(1., (float(primary[-1]['end']) - float(primary[-1]['start'])) / max(.01,float(primary[-1].get('speed',1))))
+        primary[-1]['audio_fade_out'] = primary[-1]['fade_out']
     videos = [c for c in clips if c['track'].startswith('V')]
     if not videos:
         raise ValueError('Add a video clip to V1, V2 or V3 before exporting.')
@@ -118,8 +130,9 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
                      'High Contrast':'eq=contrast=1.3:saturation=1.1,'}
             effect=effects.get(c.get('effect','None'),'')
             fade=max(0,min(float(c.get('fade',0.35 if c.get('transition','').lower() not in ('cut','hard cut','none') else 0)),length/2))
-            fades=(f'fade=t=in:st=0:d={fade:.3f}:alpha=1,'
-                   f'fade=t=out:st={max(0,length-fade):.3f}:d={fade:.3f}:alpha=1,') if fade>.001 else ''
+            fade_in=max(0.,min(float(c.get('fade_in',fade)),length/2))
+            fade_out=max(0.,min(float(c.get('fade_out',fade)),length))
+            fades=(f'fade=t=in:st=0:d={fade_in:.3f}:alpha=1,' if fade_in>.001 else '') + (f'fade=t=out:st={max(0,length-fade_out):.3f}:d={fade_out:.3f}:alpha=1,' if fade_out>.001 else '')
             if c.get('kind')=='effect':
                 opacity=max(0.0,min(1.0,float(c.get('opacity',1.0))))
                 alpha=f'colorchannelmixer=aa={opacity:.4f},'
@@ -143,7 +156,9 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             factors.append(rate)
             tempo=','.join(f'atempo={factor:.5f}' for factor in factors)
             fade=max(0,min(float(c.get('fade',0.35 if c.get('transition','').lower() not in ('cut','hard cut','none') else 0)),length/2))
-            afades=(f',afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(0,length-fade):.3f}:d={fade:.3f}') if fade>.001 else ''
+            audio_in=max(0.,min(float(c.get('audio_fade_in',fade)),length/2))
+            audio_out=max(0.,min(float(c.get('audio_fade_out',fade)),length))
+            afades=(f',afade=t=in:st=0:d={audio_in:.3f}' if audio_in>.001 else '') + (f',afade=t=out:st={max(0,length-audio_out):.3f}:d={audio_out:.3f}' if audio_out>.001 else '')
             gain=max(0.,min(2.,float(c.get('volume',1.0))))*(0.5 if c.get('duck_music') else 1.0)
             parts.append(f'[{i}:a]atrim=start={c["start"]:.4f}:duration={length*c.get("speed",1.):.4f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
             audio_labels.append(f'[a{i}]')
