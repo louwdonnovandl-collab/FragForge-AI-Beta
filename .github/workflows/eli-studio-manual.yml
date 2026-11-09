@@ -35,12 +35,39 @@ jobs:
       - name: Download FFmpeg
         shell: pwsh
         run: |
-          Invoke-WebRequest 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_download
-          $bin = Get-ChildItem ffmpeg_download -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          $probe = Get-ChildItem ffmpeg_download -Recurse -Filter ffprobe.exe | Select-Object -First 1
-          Copy-Item $bin.FullName ffmpeg.exe
-          Copy-Item $probe.FullName ffprobe.exe
+          $ErrorActionPreference = 'Stop'
+          $sources = @(
+            'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+            'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          )
+          $downloaded = $false
+          foreach ($url in $sources) {
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+              try {
+                Write-Host "Downloading FFmpeg from $url (attempt $attempt)"
+                if (Test-Path ffmpeg.zip) { Remove-Item ffmpeg.zip -Force }
+                Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip -TimeoutSec 180 -MaximumRedirection 10
+                if ((Get-Item ffmpeg.zip).Length -lt 1000000) { throw 'FFmpeg archive is unexpectedly small' }
+                if (Test-Path ffmpeg_download) { Remove-Item ffmpeg_download -Recurse -Force }
+                Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_download -Force
+                $bin = Get-ChildItem ffmpeg_download -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+                $probe = Get-ChildItem ffmpeg_download -Recurse -Filter ffprobe.exe | Select-Object -First 1
+                if (-not $bin -or -not $probe) { throw 'Archive missing ffmpeg.exe or ffprobe.exe' }
+                Copy-Item $bin.FullName ffmpeg.exe -Force
+                Copy-Item $probe.FullName ffprobe.exe -Force
+                & .\ffmpeg.exe -version
+                & .\ffprobe.exe -version
+                if ($LASTEXITCODE -ne 0) { throw 'FFprobe verification failed' }
+                $downloaded = $true
+                break
+              } catch {
+                Write-Warning "FFmpeg download/extract failed: $($_.Exception.Message)"
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+            if ($downloaded) { break }
+          }
+          if (-not $downloaded) { throw 'All FFmpeg download sources failed' }
       - name: Build Windows app
         shell: pwsh
         run: |
