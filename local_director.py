@@ -119,9 +119,25 @@ def make_plan(message, model=DEFAULT_MODEL, history=None):
 
 
 def chat_reply(message, model=DEFAULT_MODEL, history=None):
-    """Chat with Ollama; deterministic fallback keeps editing instructions useful."""
+    """Chat with Ollama; show authoritative parsed constraints for edit requests."""
     from editor_x_brain import parse_instruction, describe_intent
+    from assistant_engine import interpret_request
     intent=parse_instruction(message)
+    requested=interpret_request(message)
+    if requested['target_seconds'] and requested['mode']=='highlight':
+        opening=('Possible combat first (subject to frame evidence); '
+                 if requested.get('combat_first') else '')
+        music=('no music; ' if requested.get('no_music') else
+               'music only if explicitly selected; ')
+        return (
+            f"Edit instructions received: {requested['target_seconds']:g}s total; "
+            +opening
+            +f"{requested.get('crossfade_seconds',.5):g}s scene crossfades on MP4 export; "
+            +f"{requested.get('end_fade_seconds',1):g}s final fade to black and silence; "
+            +music
+            +"preserve gameplay audio. Nothing has been analyzed or changed yet. "
+            +"Select Prepare Edit to review source markers and proposed clips.")
+
     system=(
         'You are Eli, the integrated AI video editor inside Eli Studio. '
         'You can plan edits; the editor applies them only after user approval. '

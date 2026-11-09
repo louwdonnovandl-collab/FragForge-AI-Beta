@@ -40,3 +40,19 @@ print('PASS: 60s combat montage begins near combat, not 29s idle footage')
 _,general = precision_montage([(0., 300., 1.)], [(50., 15.)], 60.)
 assert general and abs(runtime(general)-60.) < .2, general
 print('PASS: general montage and duration/chat parsing')
+
+# The old parser was redefined later in the module and silently overrode
+# the improved one. The source must contain exactly one definition.
+import ast
+from pathlib import Path
+source_code=Path(__file__).with_name('assistant_engine.py').read_text(encoding='utf-8')
+module=ast.parse(source_code)
+assert sum(isinstance(n,ast.FunctionDef) and n.name=='interpret_request'
+           for n in module.body)==1, 'Duplicate interpret_request overrides new behavior'
+assert sum(isinstance(n,ast.FunctionDef) and n.name=='describe_plan'
+           for n in module.body)==1, 'Duplicate describe_plan overrides request summary'
+assert plan['combat_first'] and plan['focus_kills'], plan
+assert plan['crossfade_seconds']==.5 and plan['end_fade_seconds']==1., plan
+assert plan['max_noncombat_opening_seconds']==3., plan
+assert plan['no_music'] and not plan['music'], plan
+print('PASS: unique parser + explicit instruction-to-render parameters')

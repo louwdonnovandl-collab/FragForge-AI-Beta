@@ -1312,11 +1312,91 @@ class Editor(QMainWindow):
         cancel_button=self.button('Cancel analysis',lambda:None);cancel_button.setEnabled(False)
         back_button=self.button('← Back to Assistant',lambda checked=False:None) if from_assistant else None
         if back_button:controls.addWidget(back_button)
-        controls.addWidget(analyze);controls.addWidget(cancel_button);controls.addWidget(markers_button);controls.addWidget(apply)
+        trace_button=self.button('Eli Processing Trace',lambda:None)
+        controls.addWidget(analyze);controls.addWidget(cancel_button);controls.addWidget(markers_button);controls.addWidget(trace_button);controls.addWidget(apply)
         state={'cuts':None,'windows':[],'segments':[],'intro':[],'cues':[],'vision':None,'markers':[]}
         start=float(source.get('start',0));end=float(source.get('end',0))
         full_duration,_=probe(source['path'])
         full_end=min(float(full_duration),3600.)
+        def processing_trace():
+            plan=dict(pending or {})
+            vision=state.get('vision') or {}
+            analysis=state.get('cuts') or {}
+            confirmed=state.get('combat_markers',[])
+            source_events=[]
+            position=runtime(state.get('intro') or [])
+            for idx,(a,b) in enumerate(state.get('windows',[])):
+                velocity=(state['segments'][idx][2]
+                          if idx<len(state.get('segments',[])) else 1.)
+                seconds=(b-a)/max(.01,velocity)
+                source_events.append({
+                    'clip':idx+1,'source_start':round(a,3),
+                    'source_end':round(b,3),'output_start':round(position,3),
+                    'output_end':round(position+seconds,3),'speed':velocity,
+                    'combat_candidates_in_clip':[round(x,2) for x in confirmed if a<=x<=b],
+                    'evidence':('possible combat' if any(a<=x<=b for x in confirmed)
+                                else 'unverified visual/supporting footage')})
+                position+=seconds
+            selected=[c for c in self.clips
+                      if c.get('track')=='V1' and c.get('eli_auto_montage')]
+            return {
+                'stage_1_raw_request':plan.get('original','No assistant request'),
+                'stage_2_parsed_intent':{
+                    key:plan.get(key) for key in (
+                        'target_seconds','mode','focus_kills','combat_first',
+                        'max_noncombat_opening_seconds','requested_speed','no_music',
+                        'music','crossfade_seconds','end_fade_seconds')},
+                'stage_3_analysis':{
+                    'source_filename':Path(source['path']).name,
+                    'scanned_source_seconds':full_end,
+                    'vision_enabled':vision_enabled.isChecked(),
+                    'vision_model':vision_model.currentText() if vision_enabled.isChecked() else 'not scanned',
+                    'vision_samples':len(vision.get('samples',[])),
+                    'vision_failed_frames':vision.get('failed_frames',0),
+                    'vision_errors':vision.get('errors',[]),
+                    'visual_activity_peaks':len(analysis.get('activity_peaks',[])),
+                    'combat_candidate_timestamps':confirmed,
+                    'user_confirmed_timestamps':state.get('user_markers',[]),
+                    'allow_unverified':allow_unverified.isChecked()},
+                'stage_4_selected_clips':source_events,
+                'stage_5_timeline':{
+                    'eli_v1_clips':len(selected),
+                    'durations':[round(duration(c),3) for c in selected],
+                    'transition_settings':[{
+                        'at':round(c.get('at',0),3),
+                        'crossfade_seconds':c.get('crossfade_seconds'),
+                        'transition':c.get('transition'),
+                        'end_fade':bool(c.get('eli_end_fade'))}
+                        for c in selected],
+                    'crossfades_export_only':True,
+                    'preview':'raw source playback cannot display export-only crossfades',
+                    'expected_export_scene_merges':max(0,len(selected)-1)},
+                'stage_6_validation':{
+                    'selected_runtime_seconds':round(position,3),
+                    'first_combat_output_seconds':state.get('first_combat_output_seconds'),
+                    'planning_warning':state.get('planning_warning','')}}
+        def show_pipeline_trace():
+            trace=processing_trace()
+            dialog=QDialog(dlg)
+            dialog.setWindowTitle('Eli — Instruction to Export Pipeline')
+            dialog.resize(860,660)
+            box=QVBoxLayout(dialog)
+            text_editor=QPlainTextEdit(dialog);text_editor.setReadOnly(True)
+            text_editor.setPlainText(json.dumps(trace,indent=2,ensure_ascii=False))
+            box.addWidget(text_editor)
+            save=self.button('Save trace JSON…',lambda:None)
+            def save_trace():
+                filename,_=QFileDialog.getSaveFileName(
+                    dialog,'Save Eli diagnostic trace','Eli_Processing_Trace.json',
+                    'JSON (*.json)')
+                if filename:
+                    Path(filename).write_text(
+                        json.dumps(processing_trace(),indent=2,ensure_ascii=False),
+                        encoding='utf-8')
+            save.clicked.connect(lambda checked=False:save_trace())
+            box.addWidget(save)
+            dialog.exec()
+        trace_button.clicked.connect(lambda checked=False:show_pipeline_trace())
         def parse_combat_markers():
             import re as _re
             stamps=[]
@@ -1338,6 +1418,11 @@ class Editor(QMainWindow):
             heartbeat.stop();cancel_button.setEnabled(False)
             analysis_bar.setRange(0,100)
             state['cuts']=cuts
+            confirmed=[]
+            state['combat_markers']=[]
+            state['user_markers']=[]
+            state['first_combat_output_seconds']=None
+            state['planning_warning']=''
             if mode.currentIndex()==0 and target_duration.value()<=0:
                 windows=choose_highlights(cuts,start,end,3,5.)
             elif mode.currentIndex()==2 and target_duration.value()<=0:
@@ -1365,9 +1450,26 @@ class Editor(QMainWindow):
                         status.setText(str(exc));analyze.setEnabled(True);apply.setEnabled(False)
                         return
                     focus=bool(pending and pending.get('focus_kills'))
+                    state['user_markers']=list(confirmed)
                     automatic=combat_windows((state['vision'] or {}).get('samples',[]),full_end) if focus else []
                     if focus and automatic and not confirmed:
                         confirmed=[(a+b)/2 for a,b,_ in automatic]
+                    state['combat_markers']=list(confirmed)
+                    if focus and not confirmed and not allow_unverified.isChecked():
+                        state['windows']=[]
+                        state['planning_warning']=(
+                            'Combat-first montage requires at least one candidate. '
+                            'No user timestamps or credible vision candidates were available. '
+                            'Enter combat timestamps, enable a vision model, or explicitly '
+                            'allow unverified action footage.')
+                        results.clear()
+                        status.setText(state['planning_warning'])
+                        work_message.setText('Combat candidate missing — no edit applied.')
+                        analysis_bar.setValue(100)
+                        editor_tabs.setCurrentWidget(scroll)
+                        analyze.setEnabled(True);apply.setEnabled(False)
+                        release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
+                        return
                     # Keep the full clean source available for supporting clips.
                     # Combat markers receive higher priority in precision_montage;
                     # restricting base to only marker windows caused mid-fight cuts
@@ -1412,6 +1514,33 @@ class Editor(QMainWindow):
                 release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
                 return
             state['windows']=windows;results.clear()
+            if pending and pending.get('combat_first') and confirmed:
+                output_cursor=runtime(state['intro'])
+                first_match=None
+                for idx,(a,b) in enumerate(windows):
+                    rate=state['segments'][idx][2] if state['segments'] else 1.
+                    hits=[t for t in confirmed if a<=t<=b]
+                    if hits:
+                        first_match=output_cursor+(min(hits)-a)/max(.01,rate)
+                        break
+                    output_cursor+=(b-a)/max(.01,rate)
+                state['first_combat_output_seconds']=first_match
+                maximum=float(pending.get('max_noncombat_opening_seconds',3))
+                if first_match is None or first_match>maximum+.05:
+                    state['windows']=[]
+                    state['planning_warning']=(
+                        f'Combat-first requested: first supported candidate would appear at '
+                        f'{first_match if first_match is not None else -1:.1f}s, '
+                        f'outside the first {maximum:g}s. '
+                        'Revise combat timestamps or analysis settings before applying.')
+                    results.clear()
+                    status.setText(state['planning_warning'])
+                    work_message.setText('Combat-first requirement failed — edit blocked.')
+                    analysis_bar.setValue(100)
+                    editor_tabs.setCurrentWidget(scroll)
+                    analyze.setEnabled(True);apply.setEnabled(False)
+                    release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
+                    return
             planned=[('intro',a,b,s) for a,b,s in state['intro']]
             planned += [('main',a,b,state['segments'][i][2] if state['segments'] else 1.) for i,(a,b) in enumerate(windows)]
             state['cues']=ranked_activity_cues(cuts.get('activity_peaks',[]),planned)
@@ -1427,7 +1556,11 @@ class Editor(QMainWindow):
                 reason=('possible combat — not verified' if likely_combat else
                         'visual activity — not verified' if likely_motion else
                         'supporting gameplay')
-                results.addItem(f'{tc(a)}  →  {tc(b)}  ({b-a:.1f}s at {rate:g}×) — {reason}')
+                result_output=sum((end-start)/max(.01,state['segments'][j][2])
+                                  for j,(start,end) in enumerate(windows[:i])) + runtime(state['intro'])
+                results.addItem(
+                    f'OUT {tc(result_output)}  |  SOURCE {tc(a)} → {tc(b)}'
+                    f' ({(b-a)/max(.01,rate):.1f}s at {rate:g}×) — {reason}')
             if state['segments']:
                 status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
             else:
@@ -1589,7 +1722,7 @@ class Editor(QMainWindow):
                 f'Visual effects: {"Verified placements only" if effects.isChecked() else "None (no verified event mapping)"}\n'
                 f'Music: {"Selected" if music_path.text().strip() else "None"}\n'
                 f'Gameplay audio: {"Balanced with music" if music_path.text().strip() else "Preserved"}\n'
-                f'Crossfades: {max(0,len(windows)+len(state["intro"])-1)} scene merges, 0.5s each\n'
+                f'Crossfades: {max(0,len(windows)+len(state["intro"])-1)} scene merges, 0.5s each (export only)\n'
                 'Ending: 1.0s fade to black and gameplay-audio fade\n'
                 'Note: crossfades are rendered in the exported MP4; the live source preview shows hard cuts.\n\n'
                 'Approve this plan before changing the timeline?')
