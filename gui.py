@@ -351,10 +351,12 @@ class VisionScanWorker(QThread):
     ready=Signal(object)
     failed=Signal(str)
     progress=Signal(int)
-    def __init__(self,path,end,model,audio_enabled=True,seed_times=(),requested_events=('combat',)):
+    def __init__(self,path,end,model,audio_enabled=True,seed_times=(),
+                 requested_events=('combat',),max_frames=None):
         super().__init__();self.path=path;self.end=end;self.model=model
         self.audio_enabled=audio_enabled;self.seed_times=list(seed_times)
         self.requested_events=tuple(requested_events)
+        self.max_frames=max_frames
         self.cancel_event=threading.Event()
     def cancel(self):self.cancel_event.set()
     def run(self):
@@ -362,6 +364,7 @@ class VisionScanWorker(QThread):
             result=vision_scan(self.path,self.end,self.model,
                                lambda done,total:self.progress.emit(int(done*75/max(1,total))),
                                self.cancel_event,profile=getattr(self,'profile','Balanced'),
+                               max_frames=self.max_frames,
                                seed_times=self.seed_times,requested_events=self.requested_events)
             if self.audio_enabled:
                 try:
@@ -1231,6 +1234,17 @@ class Editor(QMainWindow):
         if vision_model.count()==0:vision_model.addItems(['llava:7b','qwen3-vl:2b'])
         settings_layout.addWidget(QLabel('Vision model (install separately using Ollama)'))
         settings_layout.addWidget(vision_model)
+        settings_layout.addWidget(QLabel('Vision Detail — independent of AI memory mode'))
+        vision_detail=QComboBox()
+        vision_detail.addItem('Quick — 32 frames',32)
+        vision_detail.addItem('Smart — 64 frames (recommended)',64)
+        vision_detail.addItem('Detailed — 96 frames',96)
+        vision_detail.addItem('Deep — 192 frames (slow)',192)
+        vision_detail.setCurrentIndex(1)
+        vision_detail.setToolTip(
+            'Choose how many local AI images to evaluate. Smart uses motion '
+            'peaks plus targeted checks near possible combat; Deep is slower.')
+        settings_layout.addWidget(vision_detail)
         vision_help=QLabel('Requires a vision-capable model. Try llava:7b if qwen3-vl:2b returns reasoning only.\n'
                            'Eli estimates activity and scene boundaries from frames. Review before applying.')
         vision_help.setWordWrap(True);settings_layout.addWidget(vision_help)
@@ -1385,6 +1399,7 @@ class Editor(QMainWindow):
                     'coarse_frames':vision.get('coarse_frames',0),
                     'refined_frames':vision.get('refined_frames',0),
                     'frame_budget':vision.get('max_frames',0),
+                    'selected_vision_detail':vision_detail.currentText(),
                     'estimated_scene_windows':state.get('estimated_scene_windows',[]),
                     'vision_errors':vision.get('errors',[]),
                     'visual_activity_peaks':len(analysis.get('activity_peaks',[])),
@@ -1660,7 +1675,7 @@ class Editor(QMainWindow):
             if state['cuts'] is not None:
                 apply.setEnabled(False)
                 status.setText('Editing settings changed — click Analyze video again before applying.')
-        for control in (mode, target_duration, playback_speed, intro_duration, speedup, sensitivity, count, length, vision_model):
+        for control in (mode, target_duration, playback_speed, intro_duration, speedup, sensitivity, count, length, vision_model, vision_detail):
             if isinstance(control,QComboBox):control.currentIndexChanged.connect(invalidate_analysis)
             elif isinstance(control,QCheckBox):control.toggled.connect(invalidate_analysis)
             else:control.valueChanged.connect(invalidate_analysis)
@@ -1699,7 +1714,9 @@ class Editor(QMainWindow):
                 failed('Vision model '+model+' is not installed. Run: ollama pull '+model+'\n'
                        'Or uncheck automatic vision scan and explicitly allow unverified footage.')
                 return
-            status.setText('Vision AI scanning sampled gameplay frames…')
+            status.setText(
+                f'Vision AI scanning up to {vision_detail.currentData()} '
+                'motion-guided frames…')
             analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             desired=('combat',) if pending and pending.get('focus_kills') else ()
             if pending and pending.get('focus_loot'):
@@ -1707,7 +1724,8 @@ class Editor(QMainWindow):
             worker=VisionScanWorker(
                 source['path'],full_end,model,audio_enabled.isChecked(),
                 seed_times=cuts.get('activity_peaks',[]),
-                requested_events=desired or ('combat',))
+                requested_events=desired or ('combat',),
+                max_frames=int(vision_detail.currentData()))
             worker.profile=getattr(self,'_ai_performance_mode','Accelerated')
             self._vision_scan_worker=worker
             worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))

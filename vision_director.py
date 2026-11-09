@@ -77,33 +77,39 @@ def classify_frame(path,seconds,model,profile="Balanced"):
             errors.append(str(exc))
     raise ValueError('Vision classification failed: '+'; '.join(errors))
 
+def initial_sample_times(end,budget,seed_times=()):
+    """Spend coarse vision calls on both timeline coverage and motion hotspots."""
+    end=max(.25,float(end))
+    limit=max(1,(int(budget)+1)//2)
+    # When motion peaks exist, reserve at least half the coarse budget for
+    # the strongest peaks. This replaces unproductive uniform-only coverage.
+    evenly=max(1,min(limit,int(end/12)+1))
+    if seed_times:
+        evenly=max(1,(evenly+1)//2)
+    picks=[max(0.,min(end-.2,(i+.5)*end/evenly))
+           for i in range(evenly)]
+    for second,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
+        if len(picks)>=limit:
+            break
+        moment=max(0.,min(end-.2,float(second)))
+        if all(abs(moment-existing)>=3. for existing in picks):
+            picks.append(moment)
+    return sorted(set(round(moment,2) for moment in picks))
+
+
 def scan(path,end,model,progress=None,cancel=None,max_frames=None,
          profile="Balanced",seed_times=(),requested_events=("combat",)):
-    """Use a 2x visual-frame budget with targeted event-boundary refinement.
+    """Use the requested frame budget with motion-guided scene refinement.
 
-    Phase 1 broadly samples the recording and known motion peaks. Phase 2
-    inspects up to half the total budget near promising scenes at 3s spacing.
-    Estimates are not verified gameplay outcomes. Limits are per profile.
+    Phase 1 covers the timeline and its strongest FFmpeg motion peaks.
+    Phase 2 samples close to estimated events in 3-second increments.
+    The caller may choose a smaller budget independently of RAM profile.
     """
     from ollama_memory import release_model
     end=max(.25,float(end))
     budget=max(1,int(max_frames or PROFILES[profile]["max_frames"]))
-    coarse_budget=max(1,(budget+1)//2)
-    coarse_uniform_count=max(1,min(coarse_budget,int(end/12)+1))
-    broad=[max(0.,min(end-.2,(i+.5)*end/coarse_uniform_count))
-           for i in range(coarse_uniform_count)]
-    # If uniform sampling has spare slots, include high-motion positions.
-    extra_slots=max(0,coarse_budget-len(broad))
-    for second,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
-        if extra_slots<=0:
-            break
-        t=max(0.,min(end-.2,float(second)))
-        if all(abs(t-existing)>=5. for existing in broad):
-            broad.append(t)
-            extra_slots-=1
-        if extra_slots<=0:
-            break
-    broad=sorted(set(round(t,2) for t in broad))
+    broad=initial_sample_times(end,budget,seed_times)
+    coarse_uniform_count=max(1,len(broad))
     remaining=max(0,budget-len(broad))
     try:
         coarse=_scan_samples(
