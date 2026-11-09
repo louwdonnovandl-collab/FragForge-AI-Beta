@@ -46,3 +46,23 @@ gui_file=__import__('pathlib').Path(__file__).with_name('gui.py').read_text(enco
 assert "vision_detail.addItem('Smart — 64 frames (recommended)',64)" in gui_file
 assert 'max_frames=int(vision_detail.currentData())' in gui_file
 print('PASS: vision detail is adjustable and motion samples receive priority')
+
+# Deep-dive regression: a lone high-confidence combat frame must NOT become
+# an 18-second fight, nor should high-motion walking become a combat scene.
+isolated=[
+    {'time':50.,'event':'walking','confidence':.95},
+    {'time':53.,'event':'combat','confidence':.99},
+    {'time':56.,'event':'walking','confidence':.92}]
+assert combat_windows(isolated,120.)==[],combat_windows(isolated,120.)
+walking=[{'time':t,'event':'walking','confidence':.99}
+         for t in (20.,21.5,23.,24.5,26.)]
+assert combat_windows(walking,120.)==[]
+confirmed=[
+    {'time':98.,'event':'walking','confidence':.91},
+    {'time':100.,'event':'combat','confidence':.81},
+    {'time':101.5,'event':'combat','confidence':.90},
+    {'time':103.,'event':'combat','confidence':.88},
+    {'time':105.,'event':'walking','confidence':.94}]
+fight=combat_windows(confirmed,120.)
+assert len(fight)==1 and 98.<=fight[0][0]<=100. and 103.<=fight[0][1]<=105.,fight
+print('PASS: combat scenes need multiple temporally adjacent frames')

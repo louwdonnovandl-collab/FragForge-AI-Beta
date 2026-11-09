@@ -69,3 +69,29 @@ assert "def rendered_eli_preview(self):" in gui_source
 assert "render_in_eli=self.button(" in gui_source
 assert "preview_render=self.button(" in gui_source
 print('PASS: contiguous fragments merged and Eli rendered preview is accessible')
+
+# Deep-dive regression: strict combat edits must NEVER pad a 60-second edit
+# with 52 seconds of moving/walking footage.
+_,rejected=precision_montage(
+    [(0.,180.,1.)],[(15.,900.),(90.,900.)],60.,
+    combat_markers=[15.],action_windows=[(10.,18.,.9)],
+    require_action=True)
+assert rejected==[],rejected
+
+# An evidence-only montage can reach the requested runtime using only
+# separate combat windows, even when many unrelated high-motion peaks exist.
+windows=[(10.,30.,.9),(100.,125.,.87),(145.,170.,.86)]
+_,strict=precision_montage(
+    [(0.,180.,1.)],[(i*3.,800.) for i in range(60)],60.,
+    combat_markers=[12.,104.,148.],action_windows=windows,require_action=True)
+assert strict and abs(runtime(strict)-60.)<.06,strict
+assert all(any(x<=a<b<=y for x,y,_ in windows) for a,b,s in strict),strict
+assert strict==sorted(strict,key=lambda row:row[0]),strict
+print('PASS: combat-only montage uses only evidence-backed windows')
+
+gui_source=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "require_action=strict_combat" in gui_source
+assert "assistant_tabs.addTab(ai_mode_page,'Eli Settings')" in gui_source
+assert "self._eli_settings_store=QSettings" in gui_source
+assert 'self._eli_edit_vision_control=vision_detail' in gui_source
+print('PASS: Eli vision detail is saved in Settings and used in analysis')

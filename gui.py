@@ -1,7 +1,7 @@
 """FragForge 0.10.1: Qt multi-track editing workspace (preview uses source player)."""
 import copy, math, os, sys, json, subprocess, struct, threading, re, time, tempfile
 from pathlib import Path
-from PySide6.QtCore import Qt, QUrl, Signal, QThread, QTimer, QRectF, QMimeData, QObject, QEvent, QSize
+from PySide6.QtCore import Qt, QUrl, Signal, QThread, QTimer, QRectF, QMimeData, QObject, QEvent, QSize, QSettings
 from PySide6.QtGui import QColor, QPen, QBrush, QFont, QShortcut, QKeySequence, QPainter, QDrag, QPixmap, QImage, QIcon, QMovie, QDesktopServices
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QPushButton,QLabel,QListWidget,QFileDialog,QMessageBox,QSplitter,QGraphicsView,QGraphicsScene,QSlider,QFrame,QInputDialog,QDoubleSpinBox,QScrollArea,QTabWidget,QProgressBar,QComboBox,QToolButton, QAbstractItemView, QCheckBox, QSizePolicy, QLayout, QDialog, QLineEdit, QPlainTextEdit, QListWidgetItem, QStackedLayout)
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QMediaDevices,QSoundEffect,QVideoSink
@@ -380,6 +380,12 @@ class Editor(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle(DISPLAY_NAME);self.resize(1600,940)
         self.project_path=None;self._history=[];self._history_index=-1;self._history_busy=False;self._autosave_dirty=False;self.clips=[];self.media=[];self.selected=None;self.track='V1';self.playhead=0;self.active_path=None;self.preview_start=0;self.preview_at=0;self.worker=None;self.pending_seek_ms=None;self.play_when_ready=False
+        self._eli_settings_store=QSettings('Eli Studio','Eli Studio')
+        try:self._eli_vision_frames=int(self._eli_settings_store.value('vision_frames',64))
+        except (ValueError,TypeError):self._eli_vision_frames=64
+        if self._eli_vision_frames not in (32,64,96,192):self._eli_vision_frames=64
+        self._eli_vision_settings_control=None
+        self._eli_edit_vision_control=None
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.audio.setVolume(.8);self.player.setAudioOutput(self.audio)
         self.player.positionChanged.connect(self.on_position);self.player.errorOccurred.connect(self.player_error)
         self.player.mediaStatusChanged.connect(self.on_media_status);self.player.playbackStateChanged.connect(self.on_playback_state)
@@ -405,6 +411,23 @@ class Editor(QMainWindow):
         b=QPushButton(label);b.clicked.connect(fn)
         if accent:b.setObjectName('accent')
         return b
+    def set_eli_vision_frames(self,frames):
+        """Keep the user-selected scan count consistent across Eli windows."""
+        frames=int(frames)
+        if frames not in (32,64,96,192):
+            raise ValueError('Choose 32, 64, 96 or 192 vision frames.')
+        self._eli_vision_frames=frames
+        self._eli_settings_store.setValue('vision_frames',frames)
+        for name in ('_eli_vision_settings_control','_eli_edit_vision_control'):
+            widget=getattr(self,name,None)
+            if widget is None:continue
+            try:
+                index=widget.findData(frames)
+                if index>=0 and index!=widget.currentIndex():
+                    widget.setCurrentIndex(index)
+            except RuntimeError:
+                setattr(self,name,None)
+
     def build_ui(self):
         self.setStyleSheet(f'''QMainWindow,QWidget{{background:{BG};color:{FG};font:10pt 'Segoe UI';}}
             QPushButton{{background:{CARD};border:1px solid {BORDER};border-radius:7px;padding:9px 11px;}}
@@ -797,9 +820,33 @@ class Editor(QMainWindow):
             name=performance_mode.currentText()
             self._ai_performance_mode=name
             profile=PROFILES[name]
-            profile_description.setText(f'{name}: target {profile["budget_gb"]} GB Ollama RAM, {profile["max_frames"]} sampled frames, context {profile["num_ctx"]}. Actual RAM may exceed this target.')
+            profile_description.setText(
+                f'{name}: target {profile["budget_gb"]} GB Ollama RAM, '
+                f'context {profile["num_ctx"]}. '
+                f'Vision scan: {self._eli_vision_frames} frames (selected separately). '
+                'Actual RAM may exceed this target.')
         performance_mode.currentTextChanged.connect(lambda _value:update_profile())
         update_profile()
+        mode_layout.addWidget(QLabel('Vision Detail — frame analysis count'))
+        settings_vision=QComboBox()
+        settings_vision.addItem('Quick — 32 frames',32)
+        settings_vision.addItem('Smart — 64 frames (recommended)',64)
+        settings_vision.addItem('Detailed — 96 frames',96)
+        settings_vision.addItem('Deep — 192 frames (slow)',192)
+        saved_index=settings_vision.findData(self._eli_vision_frames)
+        settings_vision.setCurrentIndex(saved_index if saved_index>=0 else 1)
+        self._eli_vision_settings_control=settings_vision
+        mode_layout.addWidget(settings_vision)
+        help_label=QLabel(
+            'Frame count is independent of Eco/Balanced/Accelerated. '
+            'The next analysis uses this choice; an active analysis continues '
+            'with its original setting.')
+        help_label.setWordWrap(True)
+        mode_layout.addWidget(help_label)
+        def update_vision_setting(index):
+            self.set_eli_vision_frames(settings_vision.currentData())
+            update_profile()
+        settings_vision.currentIndexChanged.connect(update_vision_setting)
         refresh_status=QLabel('Refresh AI unloads Eli models; they reload on the next request.')
         refresh_status.setWordWrap(True);mode_layout.addWidget(refresh_status)
         refresh_button=self.button('Refresh AI',lambda:None)
@@ -838,7 +885,7 @@ class Editor(QMainWindow):
             worker.ready.connect(finished);worker.start()
         refresh_button.clicked.connect(lambda checked=False:refresh_ai())
         mode_layout.addStretch(1)
-        assistant_tabs.addTab(ai_mode_page,'AI Mode')
+        assistant_tabs.addTab(ai_mode_page,'Eli Settings')
         heading=QLabel('ELI  •  YOUR AI EDITING PARTNER')
         heading.setStyleSheet('font-size:17px; font-weight:600; color:#25e2df;')
         right.addWidget(heading)
@@ -1240,7 +1287,11 @@ class Editor(QMainWindow):
         vision_detail.addItem('Smart — 64 frames (recommended)',64)
         vision_detail.addItem('Detailed — 96 frames',96)
         vision_detail.addItem('Deep — 192 frames (slow)',192)
-        vision_detail.setCurrentIndex(1)
+        chosen_index=vision_detail.findData(self._eli_vision_frames)
+        vision_detail.setCurrentIndex(chosen_index if chosen_index>=0 else 1)
+        self._eli_edit_vision_control=vision_detail
+        vision_detail.currentIndexChanged.connect(
+            lambda _index:self.set_eli_vision_frames(vision_detail.currentData()))
         vision_detail.setToolTip(
             'Choose how many local AI images to evaluate. Smart uses motion '
             'peaks plus targeted checks near possible combat; Deep is slower.')
@@ -1400,6 +1451,14 @@ class Editor(QMainWindow):
                     'refined_frames':vision.get('refined_frames',0),
                     'frame_budget':vision.get('max_frames',0),
                     'selected_vision_detail':vision_detail.currentText(),
+                    'combat_positive_frames':sum(
+                        x.get('event')=='combat'
+                        and float(x.get('confidence',0))>=.65
+                        for x in vision.get('samples',[])),
+                    'combat_supported_windows':len(
+                        state.get('estimated_scene_windows',[])),
+                    'estimated_combat_seconds':
+                        state.get('estimated_combat_seconds',0),
                     'estimated_scene_windows':state.get('estimated_scene_windows',[]),
                     'vision_errors':vision.get('errors',[]),
                     'visual_activity_peaks':len(analysis.get('activity_peaks',[])),
@@ -1421,6 +1480,8 @@ class Editor(QMainWindow):
                     'expected_export_scene_merges':max(0,len(selected)-1)},
                 'stage_6_validation':{
                     'selected_runtime_seconds':round(position,3),
+                    'combat_only_mode':state.get('strict_combat_only',False),
+                    'noncombat_supporting_seconds':state.get('supporting_seconds',0),
                     'first_combat_output_seconds':state.get('first_combat_output_seconds'),
                     'planning_warning':state.get('planning_warning','')}}
         def show_pipeline_trace():
@@ -1521,7 +1582,15 @@ class Editor(QMainWindow):
                                   if pending and pending.get('focus_loot') else [])
                     scene_estimates=automatic if focus else loot_windows
                     if focus and automatic and not confirmed:
-                        confirmed=[(a+b)/2 for a,b,_ in automatic]
+                        # Use actual positive sample times, never a fabricated
+                        # midpoint; combat-first validation depends on this.
+                        for a,b,_ in automatic:
+                            times=[float(x['time']) for x in observations
+                                   if x.get('event')=='combat'
+                                   and float(x.get('confidence',0))>=.65
+                                   and a<=float(x['time'])<=b]
+                            if times:confirmed.append(min(times))
+                        confirmed=sorted(set(confirmed))
                     if not focus and loot_windows and not confirmed:
                         confirmed=[(a+b)/2 for a,b,_ in loot_windows]
                     if state.get('user_markers'):
@@ -1554,17 +1623,23 @@ class Editor(QMainWindow):
                     # Preserve corroborated candidates, then include other
                     # action-heavy visual peaks. The old ±8s filter removed
                     # most useful alternatives and filled time with idle footage.
+                    strict_combat=bool(focus and not allow_unverified.isChecked())
                     peaks=([(t,1000.) for t in confirmed]
-                           + [(t,min(80.,float(score)))
-                              for t,score in cuts.get('activity_peaks',[])
-                              if float(score)>=4. and not any(abs(t-c)<2. for c in confirmed)]
+                           + ([] if strict_combat else
+                              [(t,min(80.,float(score)))
+                               for t,score in cuts.get('activity_peaks',[])
+                               if float(score)>=4.
+                               and not any(abs(t-c)<2. for c in confirmed)])
                            if focus and confirmed else cuts.get('activity_peaks',[]))
                     _,segments=precision_montage(
                         base,peaks,target_duration.value(),playback_speed.value(),
                         runtime(intro),combat_markers=confirmed if focus else (),
-                        action_windows=scene_estimates)
+                        action_windows=scene_estimates,
+                        require_action=strict_combat)
                     state['supporting_footage']=False
-                    if not segments and focus and confirmed:
+                    if not segments and focus and confirmed and not strict_combat:
+                        # Only an explicitly permitted general montage can use fallback;
+                        # strict combat requests never borrow unrelated footage.
                         # Expand to clean source gameplay, prioritizing known markers,
                         # and explicitly disclose that supporting clips are unverified.
                         fallback_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
@@ -1573,7 +1648,34 @@ class Editor(QMainWindow):
                             runtime(intro),combat_markers=confirmed,
                             action_windows=scene_estimates)
                         state['supporting_footage']=bool(segments)
-                    # Never claim supporting footage is verified combat.
+                    # Track actual support coverage instead of counting every
+                    # motion peak as combat merely to reach the target length.
+                    state['strict_combat_only']=strict_combat
+                    state['estimated_combat_seconds']=round(
+                        sum((b-a) for a,b,_ in scene_estimates),2)
+                    if strict_combat and intro:
+                        segments=[]
+                        state['planning_warning']=(
+                            'Combat-only intro needs its own validated scenes. '
+                            'Set Intro to 0 seconds and re-analyze, or explicitly '
+                            'allow supporting footage.')
+                    if strict_combat and not segments and not state['planning_warning']:
+                        state['planning_warning']=(
+                            f'Insufficient Eli combat evidence: approximately '
+                            f'{state["estimated_combat_seconds"]:.1f}s of supported '
+                            f'scenes for a {target_duration.value():g}s request. '
+                            'Eli will not substitute walking or looting. Choose '
+                            'a shorter duration, supply combat timestamps, or '
+                            'explicitly allow supporting footage.')
+                    supported=0.
+                    for a,b,rate in segments:
+                        within=sum(max(0.,min(b,y)-max(a,x))
+                                   for x,y,_ in scene_estimates)
+                        supported+=min(b-a,within)/max(.01,rate)
+                    state['supporting_seconds']=round(
+                        max(0.,runtime(segments)-supported),2)
+                    state['supporting_footage']=(
+                        state['supporting_seconds']>.5)
                     state['intro']=intro;state['segments']=segments
                     windows=[(a,b) for a,b,_ in segments]
                 else:
@@ -1584,7 +1686,11 @@ class Editor(QMainWindow):
             if requested_seconds and abs(candidate_seconds-requested_seconds)>max(.15,min(1.,requested_seconds*.005)):
                 state['windows']=[]
                 results.clear()
-                status.setText(f'Cannot create the requested {requested_seconds:g}s edit: available montage is {candidate_seconds:.2f}s. Apply is disabled. Try more footage or a shorter target.')
+                status.setText(
+                    state.get('planning_warning') or
+                    f'Cannot create the requested {requested_seconds:g}s edit: '
+                    f'available montage is {candidate_seconds:.2f}s. Apply is '
+                    'disabled. Try more combat footage or a shorter target.')
                 work_message.setText('Requested duration not met. No edit will be applied.')
                 analysis_bar.setValue(100)
                 editor_tabs.setCurrentWidget(scroll)
@@ -1629,9 +1735,11 @@ class Editor(QMainWindow):
 
             for i,(a,b) in enumerate(windows):
                 rate=state['segments'][i][2] if state['segments'] else 1.
-                likely_combat=bool('confirmed' in locals() and any(a<=t<=b for t in confirmed))
+                likely_combat=any(
+                    max(0.,min(b,y)-max(a,x))>=1.
+                    for x,y,_ in state.get('estimated_scene_windows',[]))
                 likely_motion=any(a<=t<=b for t,_ in cuts.get('activity_peaks',[]))
-                reason=('Eli estimates — combat' if likely_combat else
+                reason=('Eli estimates — combat (multiple frames)' if likely_combat else
                         'Eli estimates — activity' if likely_motion else
                         'supporting gameplay')
                 result_output=sum((end-start)/max(.01,state['segments'][j][2])

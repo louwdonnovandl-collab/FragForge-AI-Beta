@@ -117,45 +117,50 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
             (lambda done, _total:progress(done,budget)) if progress else None,
             cancel,profile)
         desired=set(requested_events or ('combat',))
+        # A still frame cannot establish a fight. Look at adjacent moments.
+        # Reserve follow-up samples for promising visual OR motion candidates,
+        # even when the initial still-frame classifier missed combat entirely.
         hits=sorted(
-            (s for s in coarse['samples'] if s.get('event') in desired
-             and float(s.get('confidence',0))>=.65),
+            (s for s in coarse['samples']
+             if s.get('event') in desired and float(s.get('confidence',0))>=.60),
             key=lambda s:-float(s.get('confidence',0)))
+        anchor_limit=max(1,min(4,remaining//7)) if remaining else 0
         anchors=[]
-        for hit in hits:
-            moment=float(hit['time'])
-            if all(abs(moment-previous)>=22. for previous in anchors):
+        for item in hits:
+            moment=float(item['time'])
+            if all(abs(moment-other)>=12. for other in anchors):
                 anchors.append(moment)
-            if len(anchors)>=5:
-                break
+            if len(anchors)>=anchor_limit:break
+        for second,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
+            if len(anchors)>=anchor_limit:break
+            moment=float(second)
+            if all(abs(moment-other)>=12. for other in anchors):
+                anchors.append(moment)
         times=[]
-        # 3 second step adds observations before, during and after action.
-        # This avoids trimming a fight to a single still-image timestamp.
-        for anchor in anchors:
-            for delta in range(-4,5):
-                moment=round(max(0.,min(end-.2,anchor+delta*3.)),2)
-                if (all(abs(moment-x['time'])>=1. for x in coarse['samples'])
-                        and moment not in times):
+        for delta in (-1.5,1.5,-3.,3.,-4.5,4.5,-6.,6.,-7.5,7.5):
+            for anchor in anchors:
+                moment=round(max(0.,min(end-.2,anchor+delta)),2)
+                if (all(abs(moment-float(x['time']))>=.55
+                        for x in coarse['samples'])
+                        and all(abs(moment-existing)>=.55 for existing in times)):
                     times.append(moment)
-        # Even when no combat is recognized during the coarse pass, use the
-        # extra 2x budget on high-motion candidates and interleaved times.
-        # Otherwise a difficult recording would silently receive only the
-        # previous version's coarse sampling count.
+                if len(times)>=remaining:break
+            if len(times)>=remaining:break
+        # Use any remaining budget for a second view of high-motion regions
+        # and interleaved coverage, never for invented combat labels.
         if len(times)<remaining:
             extras=[float(t) for t,_ in sorted(
                 seed_times,key=lambda pair:-float(pair[1]))]
-            if coarse_uniform_count>0:
-                extras.extend((i+.25)*end/coarse_uniform_count
-                              for i in range(coarse_uniform_count))
-                extras.extend((i+.75)*end/coarse_uniform_count
-                              for i in range(coarse_uniform_count))
-            for t in extras:
-                t=round(max(0.,min(end-.2,t)),2)
-                if (all(abs(t-x['time'])>=.5 for x in coarse['samples'])
-                        and all(abs(t-existing)>=.5 for existing in times)):
-                    times.append(t)
-                if len(times)>=remaining:
-                    break
+            count=max(1,coarse_uniform_count)
+            extras.extend((i+.25)*end/count for i in range(count))
+            extras.extend((i+.75)*end/count for i in range(count))
+            for moment in extras:
+                moment=round(max(0.,min(end-.2,moment)),2)
+                if (all(abs(moment-float(x['time']))>=.55
+                        for x in coarse['samples'])
+                        and all(abs(moment-existing)>=.55 for existing in times)):
+                    times.append(moment)
+                if len(times)>=remaining:break
         times=sorted(times[:remaining])
         if times:
             fine=_scan_samples(
@@ -203,52 +208,67 @@ def _scan_samples(path, samples, model, progress=None, cancel=None, profile="Bal
 
 def scene_windows(samples,source_end,event="combat",half_width=9.,
                   threshold=.65,context_before=2.,context_after=2.):
-    """Estimated activity boundaries from repeated frames and event changes.
+    """Estimate a scene only after TWO distinct supporting frame observations.
 
-    Output: (source_begin, source_end, confidence). No kill assertion.
+    A single classifier hit no longer becomes an 18-second combat claim.
+    Observed non-event frames constrain the opening and ending, with at
+    most two seconds of context beyond observed action. Scene estimates
+    are not claims of a confirmed kill.
     """
-    rows=sorted((x for x in samples if "time" in x),
+    rows=sorted((x for x in samples if 'time' in x),
                 key=lambda x:float(x['time']))
-    positive=[x for x in rows if x.get('event')==event
-              and float(x.get('confidence',0))>=threshold]
+    positives=[x for x in rows
+               if x.get('event')==event
+               and float(x.get('confidence',0))>=threshold]
     groups=[]
-    for item in positive:
-        t=float(item['time'])
+    for item in positives:
+        time=float(item['time'])
         if groups:
             previous=float(groups[-1][-1]['time'])
-            negatives=sum(1 for x in rows
-                          if previous<float(x['time'])<t
-                          and x.get('event')!=event
-                          and float(x.get('confidence',0))>=.6)
-            if t-previous<=6.5 and negatives<2:
+            intervening=sum(
+                1 for x in rows
+                if previous<float(x['time'])<time
+                and x.get('event')!=event
+                and float(x.get('confidence',0))>=.6)
+            if time-previous<=5.5 and intervening<2:
                 groups[-1].append(item)
                 continue
         groups.append([item])
-    intervals=[]
+    windows=[]
     for group in groups:
-        first=float(group[0]['time'])
-        last=float(group[-1]['time'])
-        before=[float(x['time']) for x in rows
-                if first-6.<=float(x['time'])<first
-                and x.get('event')!=event
-                and float(x.get('confidence',0))>=.55]
-        after=[float(x['time']) for x in rows
+        distinct={round(float(item['time']),2) for item in group}
+        if len(distinct)<2:
+            # A lone image may show a nearby zombie, not an attack.
+            continue
+        first=min(distinct);last=max(distinct)
+        prior=[float(x['time']) for x in rows
+               if first-6.<=float(x['time'])<first
+               and x.get('event')!=event
+               and float(x.get('confidence',0))>=.55]
+        later=[float(x['time']) for x in rows
                if last<float(x['time'])<=last+6.
                and x.get('event')!=event
                and float(x.get('confidence',0))>=.55]
-        start=((max(before)+first)/2-context_before
-               if before else first-half_width)
-        stop=((last+min(after))/2+context_after
-              if after else last+half_width)
-        intervals.append((max(0.,start),min(float(source_end),stop),
-                          max(float(x.get('confidence',0)) for x in group)))
+        lead=max(0.,min(float(context_before),float(half_width)))
+        tail=max(0.,min(float(context_after),float(half_width)))
+        begin=first-lead
+        finish=last+tail
+        if prior:
+            begin=max(begin,(max(prior)+first)/2-lead/2)
+        if later:
+            finish=min(finish,(last+min(later))/2+tail/2)
+        begin=max(0.,begin)
+        finish=min(float(source_end),finish)
+        if finish-begin>=1.:
+            confidence=sum(float(x.get('confidence',0)) for x in group)/len(group)
+            windows.append((begin,finish,round(confidence,3)))
     merged=[]
-    for start,stop,conf in intervals:
-        if merged and start<=merged[-1][1]:
+    for begin,finish,confidence in windows:
+        if merged and begin<=merged[-1][1]+.10:
             a,b,p=merged[-1]
-            merged[-1]=(a,max(stop,b),max(conf,p))
+            merged[-1]=(a,max(finish,b),max(confidence,p))
         else:
-            merged.append((start,stop,conf))
+            merged.append((begin,finish,confidence))
     return merged
 
 

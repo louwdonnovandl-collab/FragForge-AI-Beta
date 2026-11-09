@@ -97,7 +97,8 @@ def intro_from_activity(segments, peaks, seconds):
     return selected
 
 
-def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0, combat_markers=(), action_windows=()):
+def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0,
+                      combat_markers=(), action_windows=(), require_action=False):
     """Select active excerpts for a duration-constrained montage.
 
     Activity peaks are visual-motion candidates, not confirmed kills. Returns
@@ -115,6 +116,58 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
         eligible=[(max(a,first_action),b) for a,b in eligible
                   if b-max(a,first_action)>.3]
     if not eligible or budget<=0:return [],[]
+    if require_action:
+        # For an explicitly combat-focused edit, motion peaks and walking are
+        # never substitutes for combat evidence. Only multi-frame windows or
+        # user-provided timestamps are allowed into the timeline.
+        detected=[]
+        for x,y,confidence in action_windows:
+            x=float(x);y=float(y);confidence=float(confidence)
+            for a,b in eligible:
+                begin=max(a,x);finish=min(b,y)
+                if finish-begin>=1.:
+                    detected.append((begin,finish,confidence))
+        detected.sort(key=lambda item:item[0])
+        merged=[]
+        for a,b,conf in detected:
+            if merged and a<=merged[-1][1]+.04:
+                old_a,old_b,old_conf=merged[-1]
+                merged[-1]=(old_a,max(old_b,b),max(old_conf,conf))
+            else:
+                merged.append((a,b,conf))
+        available=sum((b-a)/speed for a,b,_ in merged)
+        if available<budget-.05:
+            return [],[]
+        chosen=[];remaining=budget
+        ranked=sorted(enumerate(merged),key=lambda pair:
+                      (-pair[1][2],pair[1][0]))
+        for index,(a,b,conf) in ranked:
+            length=(b-a)/speed
+            if length<=remaining+.001:
+                chosen.append((index,a,b,speed))
+                remaining-=length
+        # Fill only from still-unused detected action windows.
+        for index,(a,b,conf) in ranked:
+            if remaining<=.03:break
+            if any(item[0]==index for item in chosen):continue
+            take=min(b-a,remaining*speed)
+            if take>=1.:
+                chosen.append((index,a,a+take,speed))
+                remaining-=take/speed
+        selected=sorted([(a,b,s) for _,a,b,s in chosen],key=lambda x:x[0])
+        # If an exact duration needs an invalid sub-second piece, reject the
+        # edit rather than make a hidden hard cut or add unrelated footage.
+        if abs(runtime(selected)-budget)>.06:
+            return [],[]
+        contiguous=[]
+        for a,b,s in selected:
+            if (contiguous and 0<=a-contiguous[-1][1]<=.04
+                    and abs(s-contiguous[-1][2])<.0001):
+                start,_,rate=contiguous[-1]
+                contiguous[-1]=(start,b,rate)
+            else:
+                contiguous.append((a,b,s))
+        return [],contiguous
     # Build complete activity sequences instead of cutting every marker into
     # fixed six-second chunks. Group nearby peaks and retain context on both sides.
     candidates=[]
