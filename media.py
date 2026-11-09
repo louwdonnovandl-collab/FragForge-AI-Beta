@@ -79,7 +79,13 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
          if c.get('track') == 'V1' and c.get('kind') != 'effect'),
         key=lambda item: float(item[1].get('at', 0)))
     primary = [c for _, c in primary_pairs]
-    eli_end_fade = bool(primary and primary[-1].get('eli_end_fade', False))
+    eli_requested = any('crossfade_seconds' in c or c.get('eli_end_fade')
+                        or c.get('eli_auto_montage') for c in primary)
+    # Saved Eli montages from v1.0.6+ may omit the explicit final flag.
+    # Any Eli-generated montage still gets the standard last-second fade.
+    eli_end_fade = bool(primary and (
+        primary[-1].get('eli_end_fade') or primary[-1].get('eli_auto_montage')
+        or 'crossfade_seconds' in primary[-1]))
     def clip_seconds(c):
         return (float(c['end']) - float(c['start'])) / max(.01, float(c.get('speed', 1.)))
     eli_montage = (
@@ -90,6 +96,16 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
         and all(abs(float(b['at']) - float(a['at']) - clip_seconds(a)) < .04
                 for a, b in zip(primary, primary[1:]))
         and all(clip_seconds(c) > .1 for c in primary))
+    # Never silently render hard cuts when Eli promised crossfades.
+    # Prior versions fell back to the legacy overlay path whenever a single
+    # AI clip was missing metadata or an existing clip interrupted the sequence.
+    if eli_requested and len(primary) > 1 and not eli_montage:
+        raise ValueError(
+            'Eli smooth transitions cannot be applied to this V1 timeline. '
+            'The clips are not one continuous Eli montage, or one or more '
+            'transition settings are missing. Reopen Eli, select Prepare Edit, '
+            'enable Replace current timeline, approve the montage and export '
+            'again. Existing edits were not changed.')
     if eli_montage:
         for previous, following in zip(primary, primary[1:]):
             # A fade at the original cut boundary needs footage from before
@@ -245,6 +261,7 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             parts.append(f'[{i}:a]atrim=start={audio_start:.6f}:duration={audio_length*c.get("speed",1.):.6f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
             audio_labels.append(f'[a{i}]')
     # Fade the finished picture, after all V1/V2/V3 layers have been combined.
+    # Applies even to one-clip Eli montages; no reliance on a final-clip alpha.
     # Fading only the final clip previously left the full-frame image unchanged.
     end_fade = min(1., total) if eli_end_fade else 0.
     video_out = (f'fade=t=out:st={total-end_fade:.6f}:d={end_fade:.6f},'

@@ -1623,6 +1623,7 @@ class Editor(QMainWindow):
                 clip['fade']=0.
                 clip['transition']='fade'
                 clip['crossfade_seconds']=.5
+                clip['eli_auto_montage']=True
                 clip['eli_end_fade']=(i==len(timeline)-1)
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
@@ -2488,7 +2489,7 @@ class Editor(QMainWindow):
         super().closeEvent(event)
     def export_video(self):
         if not self.clips:QMessageBox.information(self,'Export','Import and insert a video first.');return
-        path,_=QFileDialog.getSaveFileName(self,'Export MP4','FragForge-export.mp4','MP4 (*.mp4)')
+        path,_=QFileDialog.getSaveFileName(self,'Export MP4','Eli-Studio-export.mp4','MP4 (*.mp4)')
         if not path:return
         modes=['Auto (NVIDIA NVENC when available)', 'NVIDIA NVENC (GPU)', 'CPU x264']
         mode,ok=QInputDialog.getItem(self,'Export encoder','Video encoder:',modes,0,False)
@@ -2514,7 +2515,12 @@ class Editor(QMainWindow):
         self.render_dialog.setWindowTitle('Eli Studio — Rendering MP4')
         self.render_dialog.setMinimumWidth(420)
         layout=QVBoxLayout(self.render_dialog)
-        self.render_status=QLabel('Encoding video and mixing audio...')
+        eli_count=sum(1 for clip in self.clips
+                      if clip.get('track')=='V1' and (
+                          clip.get('eli_auto_montage') or 'crossfade_seconds' in clip))
+        self.render_status=QLabel(
+            f'Rendering {eli_count-1} Eli crossfades and final fade to black...'
+            if eli_count>1 else 'Encoding video and mixing audio...')
         self.render_bar=QProgressBar()
         self.render_bar.setRange(0,100)
         self.render_bar.setValue(0)
