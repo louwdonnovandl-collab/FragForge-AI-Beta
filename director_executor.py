@@ -118,13 +118,18 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
                 break
     if not candidates:
         candidates=[(a,min(b,a+8*speed),0.) for a,b in eligible]
-    # Fill additional gaps without assuming that movement is combat.
+    # Fill all unused intervals, including partial gaps around activity peaks.
+    # Old 8-second chunk rejection discarded entire chunks if a peak overlapped
+    # even a fraction, causing false "insufficient footage" failures.
+    occupied=sorted((a,b) for a,b,_ in candidates)
     for a,b in eligible:
-        x=a
-        while x<b and len(candidates)<1000:
-            y=min(b,x+8*speed)
-            if y-x>.3 and all(y<=u or x>=v for u,v,_ in candidates):candidates.append((x,y,0.))
-            x=y
+        cursor=a
+        for u,v in occupied:
+            if v<=cursor or u>=b:continue
+            if u>cursor+.03:candidates.append((cursor,min(u,b),0.))
+            cursor=max(cursor,min(v,b))
+            if cursor>=b:break
+        if cursor<b-.03:candidates.append((cursor,b,0.))
     selected=[];remaining=budget
     for a,b,_ in sorted(candidates,key=lambda c:-c[2]):
         if remaining<=.03:break

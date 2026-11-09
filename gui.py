@@ -1294,7 +1294,8 @@ class Editor(QMainWindow):
             playback_speed.setValue(float(pending.get('requested_speed') or 1.0))
             if pending.get('music'):
                 music_request.setText(str(pending.get('original','')))
-                select_requested_music()
+                # Music is optional; the user can choose it after reviewing the plan.
+                music_selection.setText('Music requested — select a track if desired')
             intro_duration.setValue(float(pending.get('intro_seconds',0)))
             speedup.setChecked(pending['speedup'])
             effects.setChecked(pending['effects'])
@@ -1368,8 +1369,8 @@ class Editor(QMainWindow):
                     if focus and automatic and not confirmed:
                         confirmed=[(a+b)/2 for a,b,_ in automatic]
                     if focus and confirmed:
-                        # Each confirmed moment gets a 12-second source window; do not
-                        # invent extra unrelated clips to fill a 60-second request.
+                        # Rank combat candidates first. If these cannot fill the target,
+                        # offer other usable footage clearly labeled as supporting gameplay.
                         marked=[]
                         for t in confirmed:
                             for a,b,_ in base:
@@ -1385,11 +1386,16 @@ class Editor(QMainWindow):
                             else:merged.append((a,b,1.))
                         base=merged
                     # Duration means FINAL playback runtime, not source footage seconds.
-                    # Use full-source activity candidates when combat-only windows cannot fill the target.
                     peaks=[(t,1000.) for t in confirmed] if (focus and confirmed) else cuts.get('activity_peaks',[])
                     _,segments=precision_montage(base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
-                    # Do not pad a combat-only request with unrelated footage.
-                    # A shorter honest edit is preferable to fabricated combat.
+                    state['supporting_footage']=False
+                    if not segments and focus and confirmed:
+                        # Expand to clean source gameplay, prioritizing known markers,
+                        # and explicitly disclose that supporting clips are unverified.
+                        fallback_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
+                        _,segments=precision_montage(fallback_base,peaks,target_duration.value(),playback_speed.value(),runtime(intro))
+                        state['supporting_footage']=bool(segments)
+                    # Never claim supporting footage is verified combat.
                     state['intro']=intro;state['segments']=segments
                     windows=[(a,b) for a,b,_ in segments]
                 else:
@@ -1411,12 +1417,16 @@ class Editor(QMainWindow):
             planned=[('intro',a,b,s) for a,b,s in state['intro']]
             planned += [('main',a,b,state['segments'][i][2] if state['segments'] else 1.) for i,(a,b) in enumerate(windows)]
             state['cues']=ranked_activity_cues(cuts.get('activity_peaks',[]),planned)
+            # Motion peaks are not explosions. No random BOOM overlays without
+            # a verified event-to-effect mapping.
+            if effects.isChecked() and not state.get('verified_effect_markers'):
+                effects.setChecked(False)
 
             for i,(a,b) in enumerate(windows):
                 rate=state['segments'][i][2] if state['segments'] else 1.
                 results.addItem(f'{tc(a)}  →  {tc(b)}  ({b-a:.1f}s at {rate:g}×)')
             if state['segments']:
-                status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).')
+                status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} AI combat candidates (NOT verified kills).' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
             analysis_bar.setValue(100);work_message.setText('Your edit is prepared. Review it before applying changes.')
@@ -1567,6 +1577,17 @@ class Editor(QMainWindow):
                 QMessageBox.warning(dlg,'Duration mismatch',f'Planned edit is {estimated:.2f}s, not the requested {requested:g}s. Re-analyze before applying.')
                 apply.setEnabled(False)
                 return
+            marker_count=len(state.get('cues',[]))
+            decision=QMessageBox.question(dlg,'Approve Eli edit plan',
+                f'Proposed duration: {estimated:.2f} seconds\n'
+                f'Selected video clips: {len(windows)+len(state["intro"])}\n'
+                f'Activity markers: {marker_count} (visual changes, not verified kills)\n'
+                f'Supporting footage: {"Yes — unverified gameplay" if state.get("supporting_footage") else "No extra fallback needed"}\n'
+                f'Visual effects: {"Verified placements only" if effects.isChecked() else "None (no verified event mapping)"}\n'
+                f'Music: {"Selected" if music_path.text().strip() else "None"}\n'
+                f'Gameplay audio: {"Balanced with music" if music_path.text().strip() else "Preserved"}\n\n'
+                'Approve this plan before changing the timeline?')
+            if decision!=QMessageBox.Yes:return
             if pending and pending.get('focus_kills') and not combat_markers.text().strip() and not combat_windows((state['vision'] or {}).get('samples',[]),full_end) and not allow_unverified.isChecked():
                 QMessageBox.warning(dlg,'Combat review required',
                     'No confirmed or AI-estimated combat moments were found.\n\n'
@@ -1577,11 +1598,7 @@ class Editor(QMainWindow):
                 QMessageBox.warning(dlg,'No combat footage selected',
                     'The supplied timestamps did not produce usable clips. Check the timestamps and analyze again.')
                 return
-            if pending and pending.get('music') and not music_path.text().strip():
-                select_requested_music()
-            if pending and pending.get('music') and not music_path.text().strip():
-                QMessageBox.warning(dlg,'Music required','The requested music was not found in the bundled library. No edit was applied. Check the installed music assets.')
-                return
+            # No mandatory soundtrack: absence of music must never block an edit.
             if music_path.text().strip():
                 try:
                     if not Path(music_path.text().strip()).is_file():raise FileNotFoundError(music_path.text().strip())
@@ -1617,7 +1634,7 @@ class Editor(QMainWindow):
                 clip['fade']=min(.18, max(0., length_hint / 5.0)) if (length_hint := (b-a)/max(rate,.1)) > .35 else 0.
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
-                if clip.get('audio'):
+                if clip.get('audio') and music_path.text().strip():
                     clip['volume']=.42
                 clip['label']=('INTRO — action candidate (unverified)' if part=='intro' else 'Eli edit — AI candidate, not verified kill')
                 self.clips.append(clip)
@@ -1640,9 +1657,8 @@ class Editor(QMainWindow):
                                                label='Eli background music — selected from requested genre'))
                         at+=take
                 except Exception as exc:errors.append('Background music: '+str(exc))
-            # Add restrained accents only at measured activity peaks. These are
-            # visual-change candidates, NOT recognized kills or multikills.
-            cues=state.get('cues',[])
+            # No unverified visual effects: motion peaks alone are not impacts.
+            cues=state.get('cues',[]) if state.get('verified_effect_markers') else []
             for output_time,contrast,reason in cues:
                 if effects.isChecked():
                     try:

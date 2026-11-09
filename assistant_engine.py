@@ -24,9 +24,13 @@ def interpret_request(text):
     highlight = bool(re.search(r'\b(highlights?|montage|shorts?|reels?|tiktok|clips?)\b',t))
     focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|multikills?)\b',t))
     focus_loot = bool(re.search(r'\b(loot|looting|inventory|supplies|containers?)\b',t))
-    no_sounds = bool(re.search(r'\b(no|without|avoid)\s+(?:random\s+)?(?:sound|audio|boom|sfx|music)',t))
+    # Negation must be resolved before positive keyword detection: "do not add music"
+    # contains "music" but is explicitly NOT a music request.
+    no_music = bool(re.search(r"\b(?:no|without|avoid|skip|exclude|don't|do not|never)\s+(?:(?:add|insert|include|use|play|select|any|background|random)\s+){0,4}(?:music|songs?|soundtrack|background (?:music|track)|audio track)\b",t))
+    no_sfx = bool(re.search(r"\b(?:no|without|avoid|skip|exclude|don't|do not|never)\s+(?:(?:add|insert|include|use|play|any|random|extra)\s+){0,4}(?:sound effects?|sfx|boom|whoosh|sound cues?)\b",t))
+    no_sounds = no_music or no_sfx or bool(re.search(r'\b(no|without|avoid)\s+(?:random\s+)?(?:sound|audio|boom|sfx|music)',t))
     no_fx = bool(re.search(r'\b(no|without|avoid)\s+(?:visual\s+)?(?:effects?|fx|zooms?)',t))
-    music = not no_sounds and bool(re.search(r'\b(music|songs?|tracks?|rock|jams?|soundtrack|background beat)\b',t))
+    music = not no_music and not no_sounds and bool(re.search(r'\b(?:add|insert|include|use|play|select|choose|put|with|background)\b[^.!?\n]{0,60}\b(?:music|songs?|soundtrack|background track)\b|\b(?:music|song|soundtrack)\s*:',t))
     return {
         'mode':'highlight' if highlight or (target_seconds and target_seconds <= 180) else 'longform',
         'target_seconds':target_seconds,
@@ -34,7 +38,7 @@ def interpret_request(text):
         'remove_stagnant':not bool(re.search(r'\bkeep\s+(?:all\s+)?loading screens',t)),
         'speedup':not bool(re.search(r'\b(no|without|avoid)\s+(?:speed.?up|fast forward)',t)),
         'effects':not no_fx and bool(re.search(r'\b(effects?|zoom|flash|shake|cinematic|visual|fx)\b',t)),
-        'sounds':not no_sounds and bool(re.search(r'\b(sounds?|audio|sfx|whoosh|impact|music|jams?|rock)\b',t)),
+        'sounds':not no_sfx and not no_sounds and bool(re.search(r'\b(?:add|insert|include|use|play)\b[^.!?\n]{0,50}\b(?:sound effects?|sfx|whoosh|impact cues?)\b',t)),
         'music':music,
         'captions':bool(re.search(r'\b(captions?|subtitles?|on.screen text)\b',t)),
         'intro_seconds':intro_seconds,
