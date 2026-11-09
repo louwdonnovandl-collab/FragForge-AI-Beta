@@ -67,6 +67,38 @@ def nvenc_available():
         return False
 
 
+def eli_transition_profile(previous, following):
+    """Plan a direct opacity dissolve, or join truly contiguous source frames.
+
+    No fade through black. Full requested duration is mandatory for separate
+    scenes; previously it was silently reduced around very short fragments.
+    """
+    def seconds(c):
+        return (float(c['end'])-float(c['start']))/max(.01,float(c.get('speed',1.)))
+    requested=float(following.get('crossfade_seconds',.5))
+    same_file=(os.path.normcase(os.path.abspath(str(previous['path'])))
+               ==os.path.normcase(os.path.abspath(str(following['path']))))
+    continuous=(same_file
+                and abs(float(previous['end'])-float(following['start']))<=.05
+                and abs(float(previous.get('speed',1.))
+                        -float(following.get('speed',1.)))<=.0001)
+    if continuous:
+        return {'kind':'join','overlap':0.,'preroll':0.,'freeze_pad':0.}
+    if requested<.05:
+        raise ValueError('Separate Eli scenes require an opacity crossfade.')
+    # A clip cannot support a full fade at both boundaries if it is
+    # shorter than twice the requested transition window.
+    if min(seconds(previous),seconds(following)) < requested*2-.005:
+        raise ValueError(
+            f'Eli needs clips at least {requested*2:g}s long for a full '
+            f'{requested:g}s crossfade. Merge or replace a short scene. '
+            'No hard-cut export was created.')
+    speed=max(.01,float(following.get('speed',1.)))
+    preroll=min(requested,max(0.,float(following['start']))/speed)
+    return {'kind':'blend','overlap':requested,'preroll':preroll,
+            'freeze_pad':max(0.,requested-preroll)}
+
+
 def export_layers(clips, destination, encoder='auto', quality='balanced', progress=None, width=1280, height=720, fps=30):
     """Composite V1/V2/V3 and mix A1/A2 using FFmpeg; 1280x720/30fps."""
     if width not in (1280,1920,2560,3840) or height not in (720,1080,1440,2160) or fps not in (30,60):raise ValueError('Unsupported export settings')
@@ -108,16 +140,11 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             'again. Existing edits were not changed.')
     if eli_montage:
         for previous, following in zip(primary, primary[1:]):
-            # A fade at the original cut boundary needs footage from before
-            # the incoming scene. When unavailable (source timestamp zero),
-            # clone its opening frame for the missing fraction instead.
-            overlap = min(max(.0, float(following.get('crossfade_seconds', .5))),
-                          clip_seconds(previous) / 2., clip_seconds(following) / 2.)
-            speed = max(.01, float(following.get('speed', 1.)))
-            preroll = min(overlap, max(0., float(following['start'])) / speed)
-            following['_eli_overlap'] = overlap
-            following['_eli_preroll'] = preroll
-            following['_eli_freeze_pad'] = max(0., overlap - preroll)
+            transition=eli_transition_profile(previous,following)
+            following['_eli_transition_kind']=transition['kind']
+            following['_eli_overlap']=transition['overlap']
+            following['_eli_preroll']=transition['preroll']
+            following['_eli_freeze_pad']=transition['freeze_pad']
     else:
         # Preserve legacy/non-AI timeline behavior. Never change manual fades
         # or transitions just to create Eli's automatic montages.
@@ -190,9 +217,9 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
         elapsed = clip_seconds(primary[0])
         for k, (i, c) in enumerate(primary_pairs[1:], 1):
             overlap = float(c['_eli_overlap'])
-            if overlap <= .02:
-                # The clip is too short for a normal dissolve. Concat it while
-                # keeping the exact duration and chronological order.
+            if c.get('_eli_transition_kind')=='join':
+                # These source frames are truly adjacent: no dissolve is needed.
+                # A hard cut between separate shots is never silently allowed.
                 parts.append(
                     f'[{label}][eli_src_{i}]concat=n=2:v=1:a=0[eli_merge_{k}]')
             else:
@@ -264,12 +291,14 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             parts.append(f'[{i}:a]atrim=start={audio_start:.6f}:duration={audio_length*c.get("speed",1.):.6f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
             audio_labels.append(f'[a{i}]')
     if eli_montage:
-        expected_merges = len(primary) - 1
+        expected_merges=sum(
+            following.get('_eli_transition_kind')=='blend'
+            for following in primary[1:])
         actual_merges = sum('xfade=transition=fade:' in stage for stage in parts)
         if actual_merges != expected_merges:
             raise RuntimeError(
-                f'Eli expected {expected_merges} crossfades but found '
-                f'{actual_merges} in the render graph; export stopped.')
+                f'Eli expected {expected_merges} direct opacity crossfades '
+                f'but found {actual_merges} in the render graph; export stopped.')
     # Fade the finished picture, after all V1/V2/V3 layers have been combined.
     # Applies even to one-clip Eli montages; no reliance on a final-clip alpha.
     # Fading only the final clip previously left the full-frame image unchanged.

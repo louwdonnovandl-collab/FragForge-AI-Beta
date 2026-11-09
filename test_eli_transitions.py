@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from media import binary, export_layers
+from media import binary, export_layers, eli_transition_profile
 
 
 def run(args):
@@ -87,10 +87,15 @@ def check():
             raise AssertionError("Second scene is not recognizably blue")
         if green[1] < 60 or green[0] > 90:
             raise AssertionError("Third scene is not recognizably green")
-        if not (fade1[0] > 35 and fade1[2] > 35):
-            raise AssertionError("Hard cut: first red/blue crossfade missing")
-        if not (fade2[1] > 25 and fade2[2] > 35):
-            raise AssertionError("Hard cut: second blue/green crossfade missing")
+        if not (80 < fade1[0] < 190 and 80 < fade1[2] < 190
+                and fade1[0] + fade1[2] > 200):
+            raise AssertionError(
+                "Opacity blend failed: scene A and B must each be ~50% "
+                "visible at the crossfade midpoint, with no black flash")
+        if not (fade2[1] > 35 and fade2[2] > 75
+                and fade2[1] + fade2[2] > 125):
+            raise AssertionError(
+                "Opacity blend failed: blue and green must overlap without black")
         if max(final) > 40:
             raise AssertionError("Final image did not fade to black")
         decoded = subprocess.run(
@@ -105,8 +110,20 @@ def check():
         print("Audio RMS at 5.10 and 5.82:", earlier, later)
         if later >= earlier * .5:
             raise AssertionError("Final audio fade is missing")
-        print("ELI TRANSITIONS PASS: two visible crossfades, black ending, "
-              "audio fade, exact six-second output")
+        print("ELI TRANSITIONS PASS: direct opacity blends (50/50 midpoint), "
+              "black ending, audio fade, exact six-second output")
+        adjacent=dict(clips[1], path=clips[0]['path'],start=3.,end=4.)
+        joined=eli_transition_profile(clips[0],adjacent)
+        assert joined['kind']=='join' and joined['overlap']==0., joined
+        distinct=eli_transition_profile(clips[0],clips[1])
+        assert distinct['kind']=='blend' and abs(distinct['overlap']-.5)<.001
+        tiny=dict(clips[1], end=1.4)
+        try:
+            eli_transition_profile(clips[0],tiny)
+        except ValueError as exc:
+            assert 'clips at least' in str(exc), exc
+        else:
+            raise AssertionError("An undersized clip did not fail clearly")
         # Test the old silent-fallback failure mode explicitly.
         damaged = [dict(c) for c in clips]
         damaged[1].pop("crossfade_seconds")

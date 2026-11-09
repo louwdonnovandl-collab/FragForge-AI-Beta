@@ -775,6 +775,12 @@ class Editor(QMainWindow):
         preview_layout.addWidget(QLabel('Review proposed edits before applying changes.'))
         preview_open=self.button('Open Edit Preview',lambda checked=False:self.open_auto_editor(from_assistant=True))
         preview_layout.addWidget(preview_open)
+        preview_layout.addWidget(QLabel(
+            'Approve Eli\'s selected scenes before rendering the real MP4 preview.'))
+        preview_render=self.button(
+            '▶ Rendered Preview — actual opacity blends',
+            lambda checked=False:self.rendered_eli_preview())
+        preview_layout.addWidget(preview_render)
         preview_layout.addStretch(1)
         assistant_tabs.addTab(preview_page,'Preview Edit')
         ai_mode_page=QWidget();mode_layout=QVBoxLayout(ai_mode_page)
@@ -855,6 +861,12 @@ class Editor(QMainWindow):
         send=self.button('Send Message',lambda checked=False:send_request(),True)
         launch=self.button('Prepare Edit',lambda checked=False:run_edit())
         buttons.addWidget(send,2);buttons.addWidget(launch,1)
+        render_in_eli=self.button(
+            '▶ Rendered Preview — after applying edit',
+            lambda checked=False:self.rendered_eli_preview())
+        render_in_eli.setToolTip(
+            'Preview actual opacity crossfades and final fade in the rendered MP4')
+        right.addWidget(render_in_eli)
         details_toggle=self.button('Show editing details',lambda checked=False:toggle_details())
         right.addWidget(details_toggle)
         preview=QPlainTextEdit();preview.setReadOnly(True);preview.setMaximumHeight(160)
@@ -944,7 +956,7 @@ class Editor(QMainWindow):
             def ready(plan,reply):
                 release_ai_job('chat')
                 status.setText('● Local AI ready')
-                thinking_status.setText('Thinking complete · Use Prepare Edit to analyze footage.')
+                thinking_status.setText('Instructions recorded · click Prepare Edit to scan footage.')
                 if plan is None:
                     chat.appendPlainText('Eli: '+reply+'\n')
                     reply_label.setText(reply)
@@ -1829,7 +1841,7 @@ class Editor(QMainWindow):
                 # The last clip fades smoothly to black over its final second.
                 clip['fade']=0.
                 clip['transition']='fade'
-                clip['crossfade_seconds']=.5
+                clip['crossfade_seconds']=.5  # direct 100/0 -> 50/50 -> 0/100 opacity blend
                 clip['eli_auto_montage']=True
                 clip['eli_end_fade']=(i==len(timeline)-1)
                 # Only AI-generated V1 clips receive automatic mix balancing.
@@ -2695,6 +2707,20 @@ class Editor(QMainWindow):
         self.autosave_project()
         if self.fullscreen_window is not None:self.restore_preview()
         super().closeEvent(event)
+    def rendered_eli_preview(self):
+        """Prevent accidentally rendering an unedited full-length source."""
+        approved=[clip for clip in self.clips
+                  if clip.get('track')=='V1' and clip.get('eli_auto_montage')]
+        if not approved or not approved[-1].get('eli_end_fade'):
+            QMessageBox.information(
+                getattr(self,'_director_dialog',None) or self,
+                'Eli — Rendered Preview',
+                'Analyze the video, review the selected scenes, and approve '
+                'Apply Edit first. Then the preview will render the actual '
+                'opacity crossfades rather than the original recording.')
+            return
+        self.rendered_preview()
+
     def rendered_preview(self):
         """Render a real H.264 preview with the exact same FFmpeg transitions.
 
@@ -2711,7 +2737,9 @@ class Editor(QMainWindow):
         target=os.path.join(tempfile.gettempdir(),
                             f'Eli_Studio_Preview_{os.getpid()}_{time.monotonic_ns()}.mp4')
         self.player.pause()
-        dialog=QDialog(self)
+        director=getattr(self,'_director_dialog',None)
+        dialog=QDialog(director if director is not None and director.isVisible()
+                       else self)
         dialog.setWindowTitle('Eli — Rendering actual transitions')
         dialog.setMinimumWidth(440)
         layout=QVBoxLayout(dialog)
@@ -2720,6 +2748,8 @@ class Editor(QMainWindow):
         progress.setRange(0,100)
         layout.addWidget(status);layout.addWidget(progress)
         dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
         self._render_preview_dialog=dialog
         # Use exactly the same export_layers function as a full MP4 export.
         preview_worker=ExportWorker(self.clips,target,'cpu','fast',1280,720,30)

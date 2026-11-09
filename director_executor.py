@@ -216,6 +216,18 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
                 selected.append((a,a+take,speed));remaining-=take/speed
             if remaining<=.03:break
     selected.sort(key=lambda x:x[0])
+    # No cut or fade is necessary when two chosen pieces are contiguous in
+    # the original recording at the same speed. Tiny 0.4s fragments previously
+    # created a visibly abrupt cut and forced undersized transition windows.
+    joined=[]
+    for a,b,rate in selected:
+        if (joined and 0<=a-joined[-1][1]<=.04
+                and abs(joined[-1][2]-rate)<.0001):
+            begin,old_end,old_speed=joined[-1]
+            joined[-1]=(begin,max(old_end,b),old_speed)
+        else:
+            joined.append((a,b,rate))
+    selected=joined
     # Duration is measured in output seconds after speed adjustment.
     # Prevent overlapping selected source intervals from double-counting footage.
     if abs(runtime(selected)-budget)>max(.15,min(1.,budget*.005)):

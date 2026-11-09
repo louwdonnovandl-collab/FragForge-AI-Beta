@@ -56,3 +56,16 @@ assert plan['crossfade_seconds']==.5 and plan['end_fade_seconds']==1., plan
 assert plan['max_noncombat_opening_seconds']==3., plan
 assert plan['no_music'] and not plan['music'], plan
 print('PASS: unique parser + explicit instruction-to-render parameters')
+
+# Regression: consecutive selected source segments should stay one shot.
+_,joined=precision_montage(
+    [(0.,13.,1.),(30.,52.,1.)],
+    [(3.,1000.),(35.,1000.)],34.4,
+    combat_markers=[3.],action_windows=[(0.,12.,.9),(30.,52.,.9)])
+assert joined and abs(runtime(joined)-34.4)<.06,joined
+assert len(joined)==2 and abs(joined[0][1]-12.4)<.06,joined
+gui_source=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "def rendered_eli_preview(self):" in gui_source
+assert "render_in_eli=self.button(" in gui_source
+assert "preview_render=self.button(" in gui_source
+print('PASS: contiguous fragments merged and Eli rendered preview is accessible')
