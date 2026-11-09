@@ -157,8 +157,12 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
     for c in clips:
         if c.get('kind')=='effect':cmd += ['-loop','1','-framerate',str(fps),'-t',str((c['end']-c['start'])/max(.01,float(c.get('speed',1.)))),'-i',c['path']]
         else:cmd += ['-i', c['path']]
-    parts = [f'color=c=black:s={width}x{height}:r={fps}:d={total:.6f},format=yuv420p[base]']
-    current = 'base'
+    # An Eli montage already consists of a full-frame xfade stream.
+    # Avoid compositing it over a second full-frame base video, which can
+    # obscure the intended fades or cause unwanted framesync behavior.
+    parts = ([] if eli_montage else
+             [f'color=c=black:s={width}x{height}:r={fps}:d={total:.6f},format=yuv420p[base]'])
+    current = None if eli_montage else 'base'
     # Render AI-generated V1 scenes as one continuous xfade stream. Standard
     # manual V1/V2/V3 clips continue through the existing compositing path.
     if eli_montage:
@@ -203,10 +207,9 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
         parts.append(
             f'[{label}]tpad=stop_mode=clone:stop_duration=0.10,'
             f'trim=duration={total:.6f},setpts=PTS-STARTPTS[eli_montage]')
-        parts.append(
-            '[base][eli_montage]overlay=eof_action=pass:shortest=0'
-            '[eli_v1_composite]')
-        current = 'eli_v1_composite'
+        # Feed the crossfaded picture directly to the remaining overlay layers
+        # and to the final whole-picture fade.
+        current = 'eli_montage'
     ordered = sorted(enumerate(clips), key=lambda p: (int(p[1]['track'][1:]) if p[1]['track'].startswith('V') else 999))
     audio_labels = []
     for i,c in ordered:
@@ -260,6 +263,13 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             gain=max(0.,min(2.,float(c.get('volume',1.0))))*(0.5 if c.get('duck_music') else 1.0)
             parts.append(f'[{i}:a]atrim=start={audio_start:.6f}:duration={audio_length*c.get("speed",1.):.6f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
             audio_labels.append(f'[a{i}]')
+    if eli_montage:
+        expected_merges = len(primary) - 1
+        actual_merges = sum('xfade=transition=fade:' in stage for stage in parts)
+        if actual_merges != expected_merges:
+            raise RuntimeError(
+                f'Eli expected {expected_merges} crossfades but found '
+                f'{actual_merges} in the render graph; export stopped.')
     # Fade the finished picture, after all V1/V2/V3 layers have been combined.
     # Applies even to one-clip Eli montages; no reliance on a final-clip alpha.
     # Fading only the final clip previously left the full-frame image unchanged.
@@ -351,6 +361,28 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
         duration = float(details.get('format', {}).get('duration', 0))
         if not any(st.get('codec_type') == 'video' and st.get('codec_name') == 'h264' for st in streams) or duration < 0.1:
             raise RuntimeError('Export validation failed: missing H.264 video or duration.')
+        if eli_montage and abs(duration-total) > .15:
+            raise RuntimeError(
+                f'Eli render is {duration:.3f}s, expected {total:.3f}s. '
+                'The incorrect export was not published.')
+        if eli_end_fade:
+            # Verify the final image in the ACTUAL encoded MP4 rather than
+            # trusting the filter graph. This catches hidden black-fade failures.
+            sample = subprocess.run(
+                [binary('ffmpeg'), '-hide_banner', '-loglevel', 'error',
+                 '-sseof', '-0.15', '-i', temporary, '-an',
+                 '-vf', 'scale=8:8:flags=area,format=gray',
+                 '-f', 'rawvideo', '-'],
+                capture_output=True, timeout=45,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if sample.returncode or len(sample.stdout)<64:
+                raise RuntimeError(
+                    'Could not validate Eli fade-to-black. Export not published. '
+                    + sample.stderr.decode(errors='replace')[-300:])
+            if max(sample.stdout[-64:])>42:
+                raise RuntimeError(
+                    'Last encoded video frame is not black. '
+                    'Eli refused to publish an export without the final fade.')
         os.replace(temporary, dest_abs)
         if progress: progress(100)
     finally:

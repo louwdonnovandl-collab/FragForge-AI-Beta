@@ -3,9 +3,9 @@ from ai_runtime import PROFILES
 from vision_director import scene_windows, combat_windows
 from director_executor import precision_montage, runtime
 
-assert PROFILES['Eco']['max_frames']==24
-assert PROFILES['Balanced']['max_frames']==48
-assert PROFILES['Accelerated']['max_frames']==96
+assert PROFILES['Eco']['max_frames']==48
+assert PROFILES['Balanced']['max_frames']==96
+assert PROFILES['Accelerated']['max_frames']==192
 
 frames=[
     {'time':100.,'event':'walking','confidence':.9},

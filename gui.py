@@ -422,7 +422,11 @@ class Editor(QMainWindow):
         header.addWidget(self.button('↶ Undo',lambda checked=False:self.undo()))
         header.addWidget(self.button('↷ Redo',lambda checked=False:self.redo()))
         header.addWidget(self.button('📂 Open',self.open_project))
-        header.addWidget(self.button('▶ Rendered Preview',self.rendered_preview))
+        preview_btn=self.button('▶ Rendered Preview',self.rendered_preview)
+        preview_btn.setToolTip(
+            'Render a real MP4 to inspect the scene crossfades and final fade. '
+            'The live monitor shows the source clips without export effects.')
+        header.addWidget(preview_btn)
         header.addWidget(self.button('↥ Export',self.export_video,True))
         top=QSplitter(Qt.Horizontal);main.addWidget(top,7)
         left=QFrame();ll=QVBoxLayout(left);ll.setContentsMargins(4,4,4,4)
@@ -1394,7 +1398,13 @@ class Editor(QMainWindow):
                     'planning_warning':state.get('planning_warning','')}}
         def show_pipeline_trace():
             trace=processing_trace()
+            previous=getattr(dlg,'_eli_trace_dialog',None)
+            if previous is not None and previous.isVisible():
+                previous.raise_()
+                previous.activateWindow()
+                return
             dialog=QDialog(dlg)
+            dlg._eli_trace_dialog=dialog
             dialog.setWindowTitle('Eli — Instruction to Export Pipeline')
             dialog.resize(860,660)
             box=QVBoxLayout(dialog)
@@ -1411,8 +1421,18 @@ class Editor(QMainWindow):
                         json.dumps(processing_trace(),indent=2,ensure_ascii=False),
                         encoding='utf-8')
             save.clicked.connect(lambda checked=False:save_trace())
-            box.addWidget(save)
-            dialog.exec()
+            actions=QHBoxLayout()
+            back=self.button('← Back to Eli Progress',lambda:None)
+            back.setToolTip('Return to Eli Progress without interrupting analysis')
+            def back_to_progress():
+                editor_tabs.setCurrentWidget(work_page)
+                dialog.close()
+            back.clicked.connect(lambda checked=False:back_to_progress())
+            actions.addWidget(back,1)
+            actions.addWidget(save,1)
+            box.addLayout(actions)
+            dialog.setWindowModality(Qt.NonModal)
+            dialog.show()
         trace_button.clicked.connect(lambda checked=False:show_pipeline_trace())
         def parse_combat_markers():
             import re as _re
@@ -2753,7 +2773,7 @@ class Editor(QMainWindow):
                       if clip.get('track')=='V1' and (
                           clip.get('eli_auto_montage') or 'crossfade_seconds' in clip))
         self.render_status=QLabel(
-            f'Rendering {eli_count-1} Eli crossfades and final fade to black...'
+            f'Rendering and checking {eli_count-1} Eli crossfades and final black frame...'
             if eli_count>1 else 'Encoding video and mixing audio...')
         self.render_bar=QProgressBar()
         self.render_bar.setRange(0,100)

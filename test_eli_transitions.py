@@ -93,6 +93,13 @@ def check():
             raise AssertionError("Hard cut: second blue/green crossfade missing")
         if max(final) > 40:
             raise AssertionError("Final image did not fade to black")
+        decoded = subprocess.run(
+            [binary("ffmpeg"), "-hide_banner", "-loglevel", "error",
+             "-sseof", "-0.15", "-i", str(dest), "-an",
+             "-vf", "scale=8:8:flags=area,format=gray",
+             "-f", "rawvideo", "-"], capture_output=True)
+        assert decoded.returncode == 0 and len(decoded.stdout) >= 64, decoded.stderr
+        assert max(decoded.stdout[-64:]) <= 42, "Last decoded frame is not black"
         earlier = audio_rms(dest, 5.10)
         later = audio_rms(dest, 5.82)
         print("Audio RMS at 5.10 and 5.82:", earlier, later)
