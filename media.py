@@ -70,43 +70,67 @@ def nvenc_available():
 def export_layers(clips, destination, encoder='auto', quality='balanced', progress=None, width=1280, height=720, fps=30):
     """Composite V1/V2/V3 and mix A1/A2 using FFmpeg; 1280x720/30fps."""
     if width not in (1280,1920,2560,3840) or height not in (720,1080,1440,2160) or fps not in (30,60):raise ValueError('Unsupported export settings')
-    # Render-only pre-roll: 0.5s dissolves without shortening the timeline.
-    # Read the next clip slightly earlier, while keeping its original end time.
-    # A full-opacity outgoing shot under the incoming alpha fade creates a
-    # proper dissolve rather than two simultaneous fades dipping toward black.
+    # Eli AI montages use FFmpeg's explicit xfade filter, not alpha overlays.
+    # Each incoming source has a short pre-roll so the completed timeline
+    # stays exactly as long as the approved edit (e.g. 60 seconds).
     clips = [dict(c) for c in clips]
-    primary = sorted((c for c in clips if c.get('track') == 'V1' and c.get('kind') != 'effect'),
-                     key=lambda c: float(c.get('at', 0)))
-    for c in primary:
-        length = (float(c['end']) - float(c['start'])) / max(.01, float(c.get('speed', 1)))
-        c['fade_in'] = 0.
-        c['fade_out'] = 0.
-        c['audio_fade_in'] = 0.
-        c['audio_fade_out'] = 0.
-        c['end_fade'] = min(1., length) if c is primary[-1] and c.get('eli_end_fade', False) else 0.
-    for previous, following in zip(primary, primary[1:]):
-        boundary = float(following['at'])
-        prev_length = (float(previous['end']) - float(previous['start'])) / max(.01, float(previous.get('speed', 1)))
-        prev_end = float(previous['at']) + prev_length
-        mode = str(following.get('transition', 'fade')).lower()
-        if mode in ('cut', 'hard cut', 'none') or abs(boundary - prev_end) > .04:
-            continue
-        rate = max(.01, float(following.get('speed', 1)))
-        next_length = (float(following['end']) - float(following['start'])) / rate
-        desired = max(0., float(following.get('crossfade_seconds', .5)))
-        overlap = min(desired, prev_length / 2, next_length / 2,
-                      float(following['start']) / rate, boundary)
-        if overlap <= .02:
-            continue
-        following['start'] = float(following['start']) - overlap * rate
-        following['at'] = boundary - overlap
-        following['fade_in'] = overlap
-        following['audio_fade_in'] = overlap
-        previous['audio_fade_out'] = overlap
-    # Apply an end fade to the final V1 clip, not to every cut.
-    if primary and primary[-1].get('eli_end_fade', False):
-        primary[-1]['fade_out'] = min(1., (float(primary[-1]['end']) - float(primary[-1]['start'])) / max(.01,float(primary[-1].get('speed',1))))
-        primary[-1]['audio_fade_out'] = primary[-1]['fade_out']
+    primary_pairs = sorted(
+        ((i, c) for i, c in enumerate(clips)
+         if c.get('track') == 'V1' and c.get('kind') != 'effect'),
+        key=lambda item: float(item[1].get('at', 0)))
+    primary = [c for _, c in primary_pairs]
+    eli_end_fade = bool(primary and primary[-1].get('eli_end_fade', False))
+    def clip_seconds(c):
+        return (float(c['end']) - float(c['start'])) / max(.01, float(c.get('speed', 1.)))
+    eli_montage = (
+        len(primary) > 1 and eli_end_fade
+        and all('crossfade_seconds' in c for c in primary)
+        and all(str(c.get('transition', 'fade')).lower() == 'fade' for c in primary[1:])
+        and abs(float(primary[0]['at'])) < .04
+        and all(abs(float(b['at']) - float(a['at']) - clip_seconds(a)) < .04
+                for a, b in zip(primary, primary[1:]))
+        and all(clip_seconds(c) > .1 for c in primary))
+    if eli_montage:
+        for previous, following in zip(primary, primary[1:]):
+            # A fade at the original cut boundary needs footage from before
+            # the incoming scene. When unavailable (source timestamp zero),
+            # clone its opening frame for the missing fraction instead.
+            overlap = min(max(.0, float(following.get('crossfade_seconds', .5))),
+                          clip_seconds(previous) / 2., clip_seconds(following) / 2.)
+            speed = max(.01, float(following.get('speed', 1.)))
+            preroll = min(overlap, max(0., float(following['start'])) / speed)
+            following['_eli_overlap'] = overlap
+            following['_eli_preroll'] = preroll
+            following['_eli_freeze_pad'] = max(0., overlap - preroll)
+    else:
+        # Preserve legacy/non-AI timeline behavior. Never change manual fades
+        # or transitions just to create Eli's automatic montages.
+        for c in primary:
+            if 'crossfade_seconds' not in c:
+                continue
+            c['fade_in'] = 0.
+            c['fade_out'] = 0.
+            c['audio_fade_in'] = 0.
+            c['audio_fade_out'] = 0.
+        for previous, following in zip(primary, primary[1:]):
+            if 'crossfade_seconds' not in following:
+                continue
+            boundary = float(following['at'])
+            prev_end = float(previous['at']) + clip_seconds(previous)
+            if (str(following.get('transition', 'fade')).lower() in ('cut', 'hard cut', 'none')
+                    or abs(boundary - prev_end) > .04):
+                continue
+            rate = max(.01, float(following.get('speed', 1.)))
+            overlap = min(max(0., float(following.get('crossfade_seconds', .5))),
+                          clip_seconds(previous) / 2., clip_seconds(following) / 2.,
+                          max(0., float(following['start'])) / rate, boundary)
+            if overlap <= .02:
+                continue
+            following['start'] = float(following['start']) - overlap * rate
+            following['at'] = boundary - overlap
+            following['fade_in'] = overlap
+            following['audio_fade_in'] = overlap
+            previous['audio_fade_out'] = overlap
     videos = [c for c in clips if c['track'].startswith('V')]
     if not videos:
         raise ValueError('Add a video clip to V1, V2 or V3 before exporting.')
@@ -117,14 +141,62 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
     for c in clips:
         if c.get('kind')=='effect':cmd += ['-loop','1','-framerate',str(fps),'-t',str((c['end']-c['start'])/max(.01,float(c.get('speed',1.)))),'-i',c['path']]
         else:cmd += ['-i', c['path']]
-    parts = [f'color=c=black:s={width}x{height}:r={fps}:d={total:.3f},format=yuv420p[base]']
+    parts = [f'color=c=black:s={width}x{height}:r={fps}:d={total:.6f},format=yuv420p[base]']
     current = 'base'
+    # Render AI-generated V1 scenes as one continuous xfade stream. Standard
+    # manual V1/V2/V3 clips continue through the existing compositing path.
+    if eli_montage:
+        for i, c in primary_pairs:
+            rate = max(.01, float(c.get('speed', 1.)))
+            preroll = float(c.get('_eli_preroll', 0.))
+            pad_head = float(c.get('_eli_freeze_pad', 0.))
+            source_start = float(c['start']) - preroll * rate
+            input_length = clip_seconds(c) + preroll
+            effect = {'None': '', 'Grayscale': 'hue=s=0,',
+                      'Warm': 'eq=saturation=1.12:gamma_r=1.08:gamma_b=0.94,',
+                      'Cool': 'eq=saturation=1.06:gamma_b=1.1:gamma_r=0.94,',
+                      'High Contrast': 'eq=contrast=1.3:saturation=1.1,'}.get(
+                          c.get('effect', 'None'), '')
+            freeze = (f'tpad=start_mode=clone:start_duration={pad_head:.6f},'
+                      if pad_head > .001 else '')
+            parts.append(
+                f'[{i}:v]trim=start={source_start:.6f}:duration={input_length * rate:.6f},'
+                f'setpts=(PTS-STARTPTS)/{rate:.6f},'
+                f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+                f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
+                f'fps={fps},{effect}format=yuv420p,{freeze}'
+                f'settb=AVTB,setpts=PTS-STARTPTS[eli_src_{i}]')
+        label = f'eli_src_{primary_pairs[0][0]}'
+        elapsed = clip_seconds(primary[0])
+        for k, (i, c) in enumerate(primary_pairs[1:], 1):
+            overlap = float(c['_eli_overlap'])
+            if overlap <= .02:
+                # The clip is too short for a normal dissolve. Concat it while
+                # keeping the exact duration and chronological order.
+                parts.append(
+                    f'[{label}][eli_src_{i}]concat=n=2:v=1:a=0[eli_merge_{k}]')
+            else:
+                parts.append(
+                    f'[{label}][eli_src_{i}]'
+                    f'xfade=transition=fade:duration={overlap:.6f}:'
+                    f'offset={max(0., elapsed - overlap):.6f}[eli_merge_{k}]')
+            label = f'eli_merge_{k}'
+            elapsed += clip_seconds(c)
+        # Pad only rounding differences at the last frame. The composed video
+        # and all additional layers keep the original approved timeline length.
+        parts.append(
+            f'[{label}]tpad=stop_mode=clone:stop_duration=0.10,'
+            f'trim=duration={total:.6f},setpts=PTS-STARTPTS[eli_montage]')
+        parts.append(
+            '[base][eli_montage]overlay=eof_action=pass:shortest=0'
+            '[eli_v1_composite]')
+        current = 'eli_v1_composite'
     ordered = sorted(enumerate(clips), key=lambda p: (int(p[1]['track'][1:]) if p[1]['track'].startswith('V') else 999))
     audio_labels = []
     for i,c in ordered:
         length=(c['end']-c['start'])/max(.01,float(c.get('speed',1.0)))
         if length <= .01:raise ValueError('A clip has an invalid trim range')
-        if c['track'].startswith('V'):
+        if c['track'].startswith('V') and not (eli_montage and c in primary):
             effects={'None':'','Grayscale':'hue=s=0,','Warm':'eq=saturation=1.12:gamma_r=1.08:gamma_b=0.94,',
                      'Cool':'eq=saturation=1.06:gamma_b=1.1:gamma_r=0.94,',
                      'High Contrast':'eq=contrast=1.3:saturation=1.1,'}
@@ -150,7 +222,10 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             parts.append(f'[{current}][v{i}]overlay=x=(W-w)/2+{x:.4f}:y=(H-h)/2+{y:.4f}:format=auto:eof_action=pass:shortest=0:enable=\'between(t,{c["at"]:.4f},{c["at"]+length:.4f})\'[{out}]' if c.get('kind')=='effect' else f'[{current}][v{i}]overlay=format=auto:eof_action=pass:shortest=0:enable=\'between(t,{c["at"]:.4f},{c["at"]+length:.4f})\'[{out}]')
             current=out
         if c.get('audio') and (c['track'].startswith('A') or c['track']=='V1'):
-            delay=int(c['at']*1000)
+            preroll = float(c.get('_eli_preroll', 0.)) if eli_montage and c in primary else 0.
+            delay = max(0, round((float(c['at']) - preroll) * 1000))
+            audio_start = float(c['start']) - preroll * float(c.get('speed', 1.))
+            audio_length = length + preroll
             rate=float(c.get('speed',1.))
             factors=[]
             while rate>2.0:factors.append(2.0);rate/=2.0
@@ -160,13 +235,25 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
             fade=max(0,min(float(c.get('fade',0.35 if c.get('transition','').lower() not in ('cut','hard cut','none') else 0)),length/2))
             audio_in=max(0.,min(float(c.get('audio_fade_in',fade)),length/2))
             audio_out=max(0.,min(float(c.get('audio_fade_out',fade)),length))
+            if eli_montage and c in primary:
+                audio_in = preroll
+                position = primary.index(c)
+                audio_out = (float(primary[position + 1].get('_eli_overlap', 0.))
+                             if position + 1 < len(primary) else 0.)
             afades=(f',afade=t=in:st=0:d={audio_in:.3f}' if audio_in>.001 else '') + (f',afade=t=out:st={max(0,length-audio_out):.3f}:d={audio_out:.3f}' if audio_out>.001 else '')
             gain=max(0.,min(2.,float(c.get('volume',1.0))))*(0.5 if c.get('duck_music') else 1.0)
-            parts.append(f'[{i}:a]atrim=start={c["start"]:.4f}:duration={length*c.get("speed",1.):.4f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
+            parts.append(f'[{i}:a]atrim=start={audio_start:.6f}:duration={audio_length*c.get("speed",1.):.6f},asetpts=PTS-STARTPTS,aresample=48000,{tempo}{afades},volume={gain:.4f},adelay={delay}|{delay}[a{i}]')
             audio_labels.append(f'[a{i}]')
-    parts.append(f'[{current}]format=yuv420p[vout]')
+    # Fade the finished picture, after all V1/V2/V3 layers have been combined.
+    # Fading only the final clip previously left the full-frame image unchanged.
+    end_fade = min(1., total) if eli_end_fade else 0.
+    video_out = (f'fade=t=out:st={total-end_fade:.6f}:d={end_fade:.6f},'
+                 if end_fade > .001 else '')
+    parts.append(f'[{current}]format=yuv420p,{video_out}trim=duration={total:.6f}[vout]')
     if audio_labels:
-        parts.append(''.join(audio_labels)+f'amix=inputs={len(audio_labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,atrim=duration={total:.4f}[aout]')
+        audio_out = (f',afade=t=out:st={total-end_fade:.6f}:d={end_fade:.6f}'
+                     if end_fade > .001 else '')
+        parts.append(''.join(audio_labels)+f'amix=inputs={len(audio_labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95,atrim=duration={total:.6f}{audio_out}[aout]')
     cmd += ['-filter_complex',';'.join(parts),'-map','[vout]']
     if audio_labels:cmd += ['-map','[aout]','-c:a','aac','-b:a','192k']
     else:cmd += ['-an']
