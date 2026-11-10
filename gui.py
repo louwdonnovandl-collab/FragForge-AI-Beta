@@ -11,6 +11,7 @@ from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_mo
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage
+from longform_scene_planner import plan_longform
 from version import DISPLAY_NAME
 from vision_director import installed_models, scan as vision_scan, combat_windows, scene_windows
 from eli_action_reasoning import (temporal_action_windows,merge_evidence_windows,
@@ -338,16 +339,37 @@ class AutoAnalysisWorker(QThread):
     failed=Signal(str)
     progress=Signal(int)
     stage=Signal(str)
-    def __init__(self,path,start,end,sensitivity,long_form=False):
-        super().__init__();self.path=path;self.source_start=start;self.end=end;self.sensitivity=sensitivity;self.long_form=long_form;self.cancel_event=threading.Event()
+    def __init__(self,path,start,end,sensitivity,long_form=False,analyze_audio=False):
+        super().__init__();self.path=path;self.source_start=start
+        self.end=end;self.sensitivity=sensitivity;self.long_form=long_form
+        self.analyze_audio=analyze_audio;self.cancel_event=threading.Event()
     def cancel(self):
         self.cancel_event.set()
     def run(self):
         try:
             if self.long_form:
-                result=analyze_motion_profile(self.path,self.source_start,self.end,self.progress.emit,self.stage.emit,self.cancel_event)
+                result=analyze_motion_profile(
+                    self.path,self.source_start,self.end,
+                    (lambda pct:self.progress.emit(int(pct*.80)))
+                    if self.analyze_audio else self.progress.emit,
+                    self.stage.emit,self.cancel_event)
+                if self.analyze_audio:
+                    self.stage.emit('Scanning audio activity markers…')
+                    try:
+                        audio=scan_audio(
+                            self.path,self.end,
+                            lambda pct:self.progress.emit(80+int(pct*.19)),
+                            self.cancel_event)
+                        result['audio_events']=audio.get('events',[])
+                    except Exception as exc:
+                        if self.cancel_event.is_set():raise
+                        result['audio_events']=[]
+                        result['audio_warning']=str(exc)[:260]
+                    self.progress.emit(100)
             else:
-                result=find_scene_changes(self.path,self.source_start,self.end,self.sensitivity,self.progress.emit,self.stage.emit,self.cancel_event)
+                result=find_scene_changes(
+                    self.path,self.source_start,self.end,
+                    self.sensitivity,self.progress.emit,self.stage.emit,self.cancel_event)
             self.ready.emit(result)
         except Exception as exc:self.failed.emit(str(exc))
 
@@ -1505,6 +1527,8 @@ class Editor(QMainWindow):
                     'unverified_opening_candidates':state.get('unverified_opening',[]),
                     'estimated_combat_seconds':
                         state.get('estimated_combat_seconds',0),
+                    'longform_scene_planner':state.get('longform_report'),
+                    'audio_marker_warning':analysis.get('audio_warning',''),
                     'estimated_scene_windows':state.get('estimated_scene_windows',[]),
                     'vision_errors':vision.get('errors',[]),
                     'visual_activity_peaks':len(analysis.get('activity_peaks',[])),
@@ -1590,6 +1614,7 @@ class Editor(QMainWindow):
             use_detected.hide()
             analysis_bar.setRange(0,100)
             state['cuts']=cuts
+            state['longform_report']=None
             confirmed=[]
             state['combat_markers']=[]
             state['user_markers']=[]
@@ -1695,12 +1720,32 @@ class Editor(QMainWindow):
                                if float(score)>=4.
                                and not any(abs(t-c)<2. for c in confirmed)])
                            if focus and confirmed else cuts.get('activity_peaks',[]))
-                    _,segments=precision_montage(
-                        base,peaks,target_duration.value(),playback_speed.value(),
-                        runtime(intro),combat_markers=confirmed if focus else (),
-                        action_windows=scene_estimates,
-                        require_action=strict_combat,
-                        opening_priority_markers=unverified_opening)
+                    if target_duration.value()>=300. and not strict_combat:
+                        # For 5+ minute edits, keep COMPLETE scenes. The
+                        # short highlight algorithm makes artificial 4.5s
+                        # windows around each motion peak, which caused
+                        # 204 clips for a 15-minute Project Zomboid edit.
+                        segments,longform_report=plan_longform(
+                            base,target_duration.value()-runtime(intro),
+                            activity_peaks=cuts.get('activity_peaks',[]),
+                            quiet=quiet,
+                            audio_events=((state.get('vision') or {})
+                                          .get('audio',{}).get('events',[])
+                                          or cuts.get('audio_events',[])),
+                            action_windows=scene_estimates,
+                            playback_speed=playback_speed.value(),
+                            explicit_speed=bool(pending and pending.get('explicit_speed')),
+                            prefer_action=focus)
+                        state['longform_report']=longform_report
+                        if not segments:
+                            state['planning_warning']=longform_report['warning']
+                    else:
+                        _,segments=precision_montage(
+                            base,peaks,target_duration.value(),playback_speed.value(),
+                            runtime(intro),combat_markers=confirmed if focus else (),
+                            action_windows=scene_estimates,
+                            require_action=strict_combat,
+                            opening_priority_markers=unverified_opening)
                     state['supporting_footage']=False
                     if not segments and focus and confirmed and not strict_combat:
                         # Only an explicitly permitted general montage can use fallback;
@@ -1831,15 +1876,35 @@ class Editor(QMainWindow):
                     max(0.,min(b,y)-max(a,x))>=1.
                     for x,y,_ in state.get('estimated_scene_windows',[]))
                 likely_motion=any(a<=t<=b for t,_ in cuts.get('activity_peaks',[]))
-                reason=('Eli estimates — combat (multiple frames)' if likely_combat else
-                        'Eli estimates — activity' if likely_motion else
-                        'supporting gameplay')
+                if state.get('longform_report') is not None:
+                    motion_count=sum(a<=t<=b for t,_ in cuts.get('activity_peaks',[]))
+                    audio_count=sum(a<=e.get('time',-1)<=b for e in (
+                        (state.get('vision') or {}).get('audio',{}).get('events',[])
+                        or cuts.get('audio_events',[])))
+                    reason=(f'Long-form scene — {motion_count} motion, '
+                            f'{audio_count} audio markers')
+                else:
+                    reason=('Eli estimates — combat (multiple frames)' if likely_combat else
+                            'Eli estimates — activity' if likely_motion else
+                            'supporting gameplay')
                 result_output=sum((end-start)/max(.01,state['segments'][j][2])
                                   for j,(start,end) in enumerate(windows[:i])) + runtime(state['intro'])
                 results.addItem(
                     f'OUT {tc(result_output)}  |  SOURCE {tc(a)} → {tc(b)}'
                     f' ({(b-a)/max(.01,rate):.1f}s at {rate:g}×) — {reason}')
-            if state['segments']:
+            if state.get('longform_report'):
+                report=state['longform_report']
+                status.setText(
+                    f'Scene-preserving long-form edit: '
+                    f'{runtime(state["segments"])+runtime(state["intro"]):.1f}s, '
+                    f'{len(state["segments"])} clips, '
+                    f'{report["retained_motion"]}/{report["motion_markers"]} '
+                    f'visual activity markers and '
+                    f'{report["retained_audio"]}/{report["audio_markers"]} '
+                    f'audio markers retained. '
+                    f'Uniform retiming: {report["retime_percent"]:+.2f}%. '
+                    'Review source cut boundaries before approval.')
+            elif state['segments']:
                 status.setText(
                     f'Candidate output: '
                     f'{runtime(state["segments"])+runtime(state["intro"]):.1f}s; '
@@ -2020,9 +2085,14 @@ class Editor(QMainWindow):
             activity.update(started=time.monotonic(),last_update=time.monotonic(),last_pct=0,stage='Starting analysis')
             status.setText('Launching FFmpeg scene analysis…')
             heartbeat.start()
-            worker=AutoAnalysisWorker(source['path'],0. if (mode.currentIndex()==2 or target_duration.value()>0) else start,
-                                      full_end if (mode.currentIndex()==2 or target_duration.value()>0) else end,
-                                      sensitivity.value(),mode.currentIndex()==2 or target_duration.value()>0)
+            worker=AutoAnalysisWorker(
+                source['path'],
+                0. if (mode.currentIndex()==2 or target_duration.value()>0) else start,
+                full_end if (mode.currentIndex()==2 or target_duration.value()>0) else end,
+                sensitivity.value(),mode.currentIndex()==2 or target_duration.value()>0,
+                analyze_audio=(target_duration.value()>=300.
+                               and audio_enabled.isChecked()
+                               and not vision_enabled.isChecked()))
             self._auto_analysis_worker=worker
             worker.ready.connect(after_visual_scan);worker.failed.connect(failed)
             def update_stage(message):
@@ -2129,6 +2199,10 @@ class Editor(QMainWindow):
                 clip['eli_end_fade']=bool(
                     pending and pending.get('explicit_end_fade')
                     and i==len(timeline)-1)
+                # Recorded in the project for traceability, not an extra
+                # effect. Transitions are only applied on explicit request.
+                if state.get('longform_report'):
+                    clip['eli_scene_safe_longform']=True
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
                 if clip.get('audio') and music_path.text().strip():
@@ -2538,6 +2612,14 @@ class Editor(QMainWindow):
             'selected automatically. Click Let Eli Work to assign effects.')
         status.setWordWrap(True)
         layout.addWidget(status)
+        transition_report=QPlainTextEdit(dlg)
+        transition_report.setReadOnly(True)
+        transition_report.setLineWrapMode(QPlainTextEdit.NoWrap)
+        transition_report.setPlaceholderText(
+            'Selected transition styles and timestamps appear here.')
+        transition_report.setMinimumHeight(90)
+        transition_report.setMaximumHeight(155)
+        layout.addWidget(transition_report,1)
         actions=QHBoxLayout()
         layout.addLayout(actions)
         apply_btn=self.button('Let Eli Work',lambda checked=False:None)
@@ -2575,16 +2657,17 @@ class Editor(QMainWindow):
                 f'Eli inspected {len(report)} V1 trim boundaries. '
                 f'Updated {sum(x["applied_now"] for x in report)} of '
                 f'{max(0,len(v1)-1)} trims. '
-                f'Duration target: {slider.value()/100.:.2f}s. '
+                f'Transition duration: {slider.value()/100.:.2f}s. '
                 f'Styles: {"selected" if selected else "randomized"}. '
-                'Click Rendered Preview to see the real transitions.\n'
-                + '\n'.join(
-                    f'At {tc(entry["output_seconds"])}: {entry["style"]} '
-                    f'({entry["duration"]:.2f}s)'
-                    +(' — consecutive source frames: effect can be subtle'
-                      if entry.get('source_contiguous') else '')
-                    for entry in report))
+                'Use Rendered Preview to verify the MP4 output.')
             status.setText(summary)
+            transition_report.setPlainText('\n'.join(
+                f'At {tc(entry["output_seconds"])}: {entry["style"]} '
+                f'({entry["duration"]:.2f}s)'
+                +(' — consecutive source frames: effect can be subtle'
+                  if entry.get('source_contiguous') else '')
+                for entry in report))
+            transition_report.verticalScrollBar().setValue(0)
             self.note.setText(
                 f'Eli applied {sum(x["applied_now"] for x in report)} '
                 'timeline transitions. Render a preview to inspect them.')

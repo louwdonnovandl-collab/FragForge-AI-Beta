@@ -133,3 +133,30 @@ assert "opening_priority_markers=unverified_opening" in gui_text
 assert "temporal_action_windows" in gui_text
 assert "action_sequences=result.get('action_sequences',[])" in gui_text
 print('PASS: 10-minute combat priority permits supporting scenes and temporal action evidence')
+
+# Long-form regression: no 204 independent 4.5-second activity fragments.
+from longform_scene_planner import plan_longform, duration as scene_duration
+longsource=[(0.,2858.,1.)]
+peaks=[(float(i)*12.+30.,8.) for i in range(1,200)]
+quiet=[(float(i),float(i+14)) for i in range(70,2780,78)]
+longedit,details=plan_longform(
+    longsource,900.,activity_peaks=peaks,quiet=quiet,
+    playback_speed=1.,explicit_speed=False)
+assert longedit and abs(scene_duration(longedit)-900.)<.12,details
+assert len(longedit)<45,(len(longedit),details)
+assert all((b-a)/speed>12. for a,b,speed in longedit),longedit
+assert details['retained_motion']>0,details
+assert abs(details['retime_percent'])<=2.51,details
+# With no quiet or marker-free gaps, a long continuous fight must not be cut
+# into dozens of artificial 4.5-second pieces.
+busy=[(float(i)*6.,10.) for i in range(1,100)]
+no_safe,diagnostic=plan_longform(
+    [(0.,600.,1.)],300.,activity_peaks=busy,quiet=[],
+    playback_speed=1.,explicit_speed=False)
+assert not no_safe and diagnostic['warning'],(no_safe,diagnostic)
+# The UI must route 5-minute+ edits to this planner.
+source_gui=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "if target_duration.value()>=300. and not strict_combat:" in source_gui
+assert "segments,longform_report=plan_longform(" in source_gui
+assert "longform_scene_planner" in source_gui
+print('PASS: 15-minute edits use scene blocks instead of 4.5s motion slices')

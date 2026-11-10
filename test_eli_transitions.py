@@ -212,3 +212,12 @@ assert not manual_report[0]['applied_now'] and manual_report[1]['applied_now']
 assert manual_one[2]['transition']=='pixelize'
 assert not manual_one[1].get('eli_force_transition',False)
 print('PASS: automatic selects all trim boundaries, including adjacent source footage')
+
+# The detailed report must be scrollable for 203+ transitions so controls
+# don't get pushed below the screen.
+source_gui=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "transition_report=QPlainTextEdit(dlg)" in source_gui
+assert "transition_report.setMaximumHeight(155)" in source_gui
+assert "transition_report.setPlainText(" in source_gui
+assert "transition_report.verticalScrollBar().setValue(0)" in source_gui
+print('PASS: 200+ transition entries are displayed in a bounded scroll area')
