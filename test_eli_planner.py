@@ -95,3 +95,13 @@ assert "assistant_tabs.addTab(ai_mode_page,'Eli Settings')" in gui_source
 assert "self._eli_settings_store=QSettings" in gui_source
 assert 'self._eli_edit_vision_control=vision_detail' in gui_source
 print('PASS: Eli vision detail is saved in Settings and used in analysis')
+
+# A recognized short montage may be replanned from cached evidence; 120s
+# cannot silently override a user-selected shorter duration.
+source_gui=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "reference_time=reference)" in source_gui
+assert "target_duration.setValue(seconds)" in source_gui
+assert "analyzed(cuts)  # Replan using cached evidence" in source_gui
+assert "status.setWordWrap(True)" in source_gui
+assert "'selected_target_seconds':float(target_duration.value())" in source_gui
+print('PASS: user-selected duration, readable warning, and cached replan')

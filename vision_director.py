@@ -3,6 +3,7 @@ import base64, json, re, subprocess, urllib.request
 from pathlib import Path
 from media import binary
 from ai_runtime import PROFILES, ollama_ram_gb, MemoryBudgetGuard
+from combat_calibration import calibration_sample_times, calibration_report
 
 HOST='http://127.0.0.1:11434'
 
@@ -98,7 +99,8 @@ def initial_sample_times(end,budget,seed_times=()):
 
 
 def scan(path,end,model,progress=None,cancel=None,max_frames=None,
-         profile="Balanced",seed_times=(),requested_events=("combat",)):
+         profile="Balanced",seed_times=(),requested_events=("combat",),
+         reference_time=None):
     """Use the requested frame budget with motion-guided scene refinement.
 
     Phase 1 covers the timeline and its strongest FFmpeg motion peaks.
@@ -109,6 +111,18 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
     end=max(.25,float(end))
     budget=max(1,int(max_frames or PROFILES[profile]["max_frames"]))
     broad=initial_sample_times(end,budget,seed_times)
+    if reference_time is not None:
+        # Reserve up to a third of the first pass for the supplied benchmark,
+        # while keeping the same overall frame budget and timeline coverage.
+        coarse_limit=max(1,(budget+1)//2)
+        reference_quota=min(12,max(1,coarse_limit//3))
+        reference_samples=calibration_sample_times(
+            reference_time,end,reference_quota)
+        remaining_coarse=max(0,coarse_limit-len(reference_samples))
+        broad_rest=initial_sample_times(
+            end,max(1,2*remaining_coarse),seed_times
+        )[:remaining_coarse] if remaining_coarse else []
+        broad=sorted(set(reference_samples+broad_rest))
     coarse_uniform_count=max(1,len(broad))
     remaining=max(0,budget-len(broad))
     try:
@@ -125,7 +139,7 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
              if s.get('event') in desired and float(s.get('confidence',0))>=.60),
             key=lambda s:-float(s.get('confidence',0)))
         anchor_limit=max(1,min(4,remaining//7)) if remaining else 0
-        anchors=[]
+        anchors=([float(reference_time)] if reference_time is not None and anchor_limit else [])
         for item in hits:
             moment=float(item['time'])
             if all(abs(moment-other)>=12. for other in anchors):
@@ -178,7 +192,8 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
         result['max_frames']=budget
         result['failed_frames']+=fine.get('failed_frames',0)
         result['errors']+=fine.get('errors',[])
-        result['scan_method']='coarse+3s event-boundary sampling'
+        result['scan_method']='motion+targeted 1.5s frame sampling'
+        result['calibration']=calibration_report(result['samples'],reference_time)
         if progress:
             progress(budget,budget)
         return result

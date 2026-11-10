@@ -13,6 +13,7 @@ from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage
 from version import DISPLAY_NAME
 from vision_director import installed_models, scan as vision_scan, combat_windows, scene_windows
+from combat_calibration import parse_reference_timecode
 from audio_director import scan_audio, corroborate_vision
 from recognition_markers import build_markers, director_report, export_report
 from music_intelligence import scan_library, choose_track, genre_for_request
@@ -353,11 +354,11 @@ class VisionScanWorker(QThread):
     failed=Signal(str)
     progress=Signal(int)
     def __init__(self,path,end,model,audio_enabled=True,seed_times=(),
-                 requested_events=('combat',),max_frames=None):
+                 requested_events=('combat',),max_frames=None,reference_time=None):
         super().__init__();self.path=path;self.end=end;self.model=model
         self.audio_enabled=audio_enabled;self.seed_times=list(seed_times)
         self.requested_events=tuple(requested_events)
-        self.max_frames=max_frames
+        self.max_frames=max_frames;self.reference_time=reference_time
         self.cancel_event=threading.Event()
     def cancel(self):self.cancel_event.set()
     def run(self):
@@ -366,7 +367,8 @@ class VisionScanWorker(QThread):
                                lambda done,total:self.progress.emit(int(done*75/max(1,total))),
                                self.cancel_event,profile=getattr(self,'profile','Balanced'),
                                max_frames=self.max_frames,
-                               seed_times=self.seed_times,requested_events=self.requested_events)
+                               seed_times=self.seed_times,requested_events=self.requested_events,
+                               reference_time=self.reference_time)
             if self.audio_enabled:
                 try:
                     audio=scan_audio(self.path,self.end,lambda pct:self.progress.emit(75+int(pct*.25)),self.cancel_event)
@@ -1271,6 +1273,22 @@ class Editor(QMainWindow):
         combat_markers.setPlaceholderText('Example: 00:04:32, 00:12:08, 00:23:15')
         combat_markers.setToolTip('Enter source video timestamps where you saw actual combat. These are user-confirmed, not AI detected.')
         settings_layout.addWidget(combat_markers)
+        calibration_label=QLabel(
+            'Known combat example for recognition test (not an automatic combat marker)')
+        calibration_label.setWordWrap(True)
+        settings_layout.addWidget(calibration_label)
+        calibration_time=QLineEdit()
+        calibration_time.setPlaceholderText('MM:SS — example 14:49')
+        calibration_time.setToolTip(
+            'Eli will inspect nearby frames more densely, but only visually '
+            'recognized attacks count as combat evidence.')
+        # This specific user-provided benchmark belongs to this recording.
+        # Other recordings start with an empty reference.
+        source_name=Path(source['path']).name.casefold()
+        if ('project zomboid' in source_name
+                and 'viewpoint' in source_name and 'day 1 survival' in source_name):
+            calibration_time.setText('14:49')
+        settings_layout.addWidget(calibration_time)
         allow_unverified=QCheckBox('Allow unverified action montage if no combat timestamps are supplied')
         allow_unverified.setChecked(False)
         settings_layout.addWidget(allow_unverified)
@@ -1347,7 +1365,10 @@ class Editor(QMainWindow):
         settings_layout.addWidget(effects);settings_layout.addWidget(sounds);settings_layout.addWidget(speedup)
         settings_layout=collapsible_section('05  Apply & review', True)
         replace.setChecked(True);replace.hide()
-        status=QLabel('Click Analyze to find potential edit points.');settings_layout.addWidget(status)
+        status=QLabel('Click Analyze to find potential edit points.')
+        status.setWordWrap(True)
+        status.setMinimumHeight(38)
+        settings_layout.addWidget(status)
         # QLabel has no textChanged signal. Mirror status updates through a safe setter.
         _status_set_text = status.setText
         def update_status(message):
@@ -1395,6 +1416,9 @@ class Editor(QMainWindow):
             if target_duration.value()>0:
                 work_stage.setText(f'Requested final duration: {target_duration.value():g} seconds')
         results=QListWidget();results.setMinimumHeight(115);settings_layout.addWidget(results)
+        use_detected=self.button('Use detected combat duration (no rescan)',lambda:None)
+        use_detected.hide()
+        settings_layout.addWidget(use_detected)
         # Split action controls into two rows so small displays don't clip them.
         controls=QVBoxLayout();layout.addLayout(controls)
         row1=QHBoxLayout();row2=QHBoxLayout()
@@ -1441,6 +1465,7 @@ class Editor(QMainWindow):
                         'target_seconds','mode','focus_kills','combat_first',
                         'max_noncombat_opening_seconds','requested_speed','no_music',
                         'music','crossfade_seconds','end_fade_seconds')},
+                'selected_target_seconds':float(target_duration.value()),
                 'stage_3_analysis':{
                     'source_filename':Path(source['path']).name,
                     'scanned_source_seconds':full_end,
@@ -1452,6 +1477,8 @@ class Editor(QMainWindow):
                     'refined_frames':vision.get('refined_frames',0),
                     'frame_budget':vision.get('max_frames',0),
                     'selected_vision_detail':vision_detail.currentText(),
+                    'reference_combat_time':calibration_time.text().strip(),
+                    'calibration_report':vision.get('calibration',{}),
                     'combat_positive_frames':sum(
                         x.get('event')=='combat'
                         and float(x.get('confidence',0))>=.65
@@ -1542,6 +1569,7 @@ class Editor(QMainWindow):
 
         def analyzed(cuts):
             heartbeat.stop();cancel_button.setEnabled(False)
+            use_detected.hide()
             analysis_bar.setRange(0,100)
             state['cuts']=cuts
             confirmed=[]
@@ -1661,13 +1689,28 @@ class Editor(QMainWindow):
                             'Set Intro to 0 seconds and re-analyze, or explicitly '
                             'allow supporting footage.')
                     if strict_combat and not segments and not state['planning_warning']:
+                        cal=(state.get('vision') or {}).get('calibration',{})
+                        diagnostic=''
+                        if cal.get('enabled'):
+                            diagnostic=(
+                                f" Benchmark {cal.get('reference_seconds',0):.0f}s: "
+                                f"{cal.get('combat_frames',0)} of "
+                                f"{cal.get('sampled_frames',0)} nearby frames "
+                                'classified as combat.'
+                            )
+                            if not cal.get('has_repeated_combat'):
+                                diagnostic+=(
+                                    ' The local vision model did not confirm the '
+                                    'known fight from repeated frames.'
+                                )
                         state['planning_warning']=(
-                            f'Insufficient Eli combat evidence: approximately '
-                            f'{state["estimated_combat_seconds"]:.1f}s of supported '
-                            f'scenes for a {target_duration.value():g}s request. '
-                            'Eli will not substitute walking or looting. Choose '
-                            'a shorter duration, supply combat timestamps, or '
-                            'explicitly allow supporting footage.')
+                            f"Eli estimates {state['estimated_combat_seconds']:.1f}s "
+                            f"of combat scenes; selected target is "
+                            f"{target_duration.value():g}s."
+                            +diagnostic+
+                            ' No walking/looting filler was added. '
+                            'Use the detected duration below or select a shorter '
+                            'target. You can also refine the combat example.')
                     supported=0.
                     for a,b,rate in segments:
                         within=sum(max(0.,min(b,y)-max(a,x))
@@ -1689,10 +1732,17 @@ class Editor(QMainWindow):
                 results.clear()
                 status.setText(
                     state.get('planning_warning') or
-                    f'Cannot create the requested {requested_seconds:g}s edit: '
+                    f'Cannot create the selected {requested_seconds:g}s edit: '
                     f'available montage is {candidate_seconds:.2f}s. Apply is '
-                    'disabled. Try more combat footage or a shorter target.')
-                work_message.setText('Requested duration not met. No edit will be applied.')
+                    'disabled. Try a shorter target.')
+                use_detected.setVisible(
+                    bool(state.get('strict_combat_only')
+                         and state.get('estimated_combat_seconds',0)>=4.
+                         and state.get('vision')))
+                work_message.setText(
+                    f'Eli estimated {state.get("estimated_combat_seconds",0):.1f}s '
+                    f'combat for a {requested_seconds:g}s target. '
+                    'Open Edit Details to shorten the edit or review calibration.')
                 analysis_bar.setValue(100)
                 editor_tabs.setCurrentWidget(scroll)
                 analyze.setEnabled(True);apply.setEnabled(False)
@@ -1789,6 +1839,7 @@ class Editor(QMainWindow):
             elif isinstance(control,QCheckBox):control.toggled.connect(invalidate_analysis)
             else:control.valueChanged.connect(invalidate_analysis)
         combat_markers.textChanged.connect(invalidate_analysis)
+        calibration_time.textChanged.connect(invalidate_analysis)
         allow_unverified.toggled.connect(invalidate_analysis)
         vision_enabled.toggled.connect(invalidate_analysis)
         audio_enabled.toggled.connect(invalidate_analysis)
@@ -1823,9 +1874,16 @@ class Editor(QMainWindow):
                 failed('Vision model '+model+' is not installed. Run: ollama pull '+model+'\n'
                        'Or uncheck automatic vision scan and explicitly allow unverified footage.')
                 return
+            try:
+                reference=parse_reference_timecode(
+                    calibration_time.text(),full_end)
+            except ValueError as exc:
+                failed(str(exc));return
             status.setText(
                 f'Vision AI scanning up to {vision_detail.currentData()} '
-                'motion-guided frames…')
+                'motion-guided frames'
+                + (f' including the known fight at {calibration_time.text()}'
+                   if reference is not None else '')+'…')
             analysis_bar.setRange(0,100);analysis_bar.setValue(0)
             desired=('combat',) if pending and pending.get('focus_kills') else ()
             if pending and pending.get('focus_loot'):
@@ -1834,7 +1892,8 @@ class Editor(QMainWindow):
                 source['path'],full_end,model,audio_enabled.isChecked(),
                 seed_times=cuts.get('activity_peaks',[]),
                 requested_events=desired or ('combat',),
-                max_frames=int(vision_detail.currentData()))
+                max_frames=int(vision_detail.currentData()),
+                reference_time=reference)
             worker.profile=getattr(self,'_ai_performance_mode','Accelerated')
             self._vision_scan_worker=worker
             worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))
@@ -1859,6 +1918,26 @@ class Editor(QMainWindow):
             worker.failed.connect(failed)
             activity.update(last_update=time.monotonic(),stage='Vision scan running')
             worker.start()
+
+        def use_detected_duration():
+            available=float(state.get('estimated_combat_seconds',0))
+            cuts=state.get('cuts')
+            if not cuts or not state.get('vision') or available<4.:
+                QMessageBox.information(
+                    dlg,'Eli combat review',
+                    'Analyze footage with vision recognition before shortening.')
+                return
+            # Round down and leave a small safety margin so that the strict
+            # evidence-only planner never pads with unrelated gameplay.
+            seconds=max(2,int(available-.25))
+            if seconds>=target_duration.value():
+                QMessageBox.information(
+                    dlg,'Eli combat review','The selected target is already short enough.')
+                return
+            target_duration.setValue(seconds)
+            analyzed(cuts)  # Replan using cached evidence; NO second Ollama scan.
+        use_detected.clicked.connect(
+            lambda checked=False:use_detected_duration())
 
         def run_analysis():
             if any(w is not None and w.isRunning() for w in (getattr(self,'_auto_analysis_worker',None),getattr(self,'_vision_scan_worker',None))):

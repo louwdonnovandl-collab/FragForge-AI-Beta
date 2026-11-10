@@ -66,3 +66,30 @@ confirmed=[
 fight=combat_windows(confirmed,120.)
 assert len(fight)==1 and 98.<=fight[0][0]<=100. and 103.<=fight[0][1]<=105.,fight
 print('PASS: combat scenes need multiple temporally adjacent frames')
+
+# A user-provided fight is a sampling hint, never a forced recognition label.
+from combat_calibration import (parse_reference_timecode,
+                                 calibration_sample_times,
+                                 calibration_report)
+reference=parse_reference_timecode('14:49',2858.)
+assert reference==889.
+assert parse_reference_timecode('00:14:49',2858.)==889.
+assert parse_reference_timecode('',2858.) is None
+for invalid in ('14:99','67:88','00:14:99','bogus','50:00'):
+    try:parse_reference_timecode(invalid,2858.)
+    except ValueError:pass
+    else:raise AssertionError('Accepted invalid calibration time: '+invalid)
+calibration=calibration_sample_times(889.,2858.,12)
+assert 1<=len(calibration)<=12,calibration
+assert 889. in calibration
+assert any(878.<t<889. for t in calibration)
+assert any(889.<t<901. for t in calibration)
+unrecognized=calibration_report(
+    [{'time':t,'event':'walking','confidence':.95} for t in calibration],889.)
+assert unrecognized['combat_frames']==0
+assert not unrecognized['has_repeated_combat']
+recognized=calibration_report(
+    [{'time':888.,'event':'combat','confidence':.81},
+     {'time':889.5,'event':'combat','confidence':.88}],889.)
+assert recognized['has_repeated_combat']
+print('PASS: benchmark timecodes and honest dense-scan diagnostics')
