@@ -202,6 +202,25 @@ class Timeline(QGraphicsView):
             y=48+TRACKS.index(c['track'])*55; x=138+c['at']*self.scale; width=max(4,duration(c)*self.scale)
             rect=sc.addRect(x,y+3,width,45,QPen(QColor(CYAN if self.selected==i else '#6388a5'),2 if self.selected==i else 1),QBrush(QColor(COLORS[c['track']])))
             rect.setData(0,i)
+            # The FFmpeg effect is stored on the incoming V1 clip. Make it
+            # visible in the timeline even when source playback shows a cut.
+            if (c['track']=='V1' and float(c.get('at',0))>.01
+                    and c.get('transition') in TRANSITION_STYLES
+                    and float(c.get('crossfade_seconds',0))>=.05):
+                style=c['transition']
+                seconds=float(c['crossfade_seconds'])
+                band=sc.addRect(
+                    x-3,y+9,min(10,max(5,width/5)),30,
+                    QPen(QColor('#ffb071'),1),QBrush(QColor('#8d4559')))
+                band.setZValue(4)
+                band.setToolTip(
+                    f'Eli: {TRANSITION_STYLES[style]} ({seconds:.2f}s). '
+                    'Saved to V1. Use Cut Preview to watch this effect.')
+                symbol=sc.addSimpleText('↔')
+                symbol.setBrush(QColor('white'))
+                symbol.setPos(x-5,y+12)
+                symbol.setZValue(5)
+                symbol.setToolTip(band.toolTip())
             if self.visual_cache:
                 if c['kind']=='audio':
                     wave=self.visual_cache.waves.get(c['path'])
@@ -2551,10 +2570,11 @@ class Editor(QMainWindow):
         title.setStyleSheet('font-size:18px;font-weight:700;color:#25e2df;')
         layout.addWidget(title)
         introduction=QLabel(
-            'Eli examines EVERY trimmed V1 clip boundary, including consecutive '
-            'parts of the original recording. Select styles below, or leave all '
-            'unchecked to randomize. No gameplay vision rescan is needed. '
-            'Adjacent source frames may make the visual blend subtle.')
+            'Let Eli Work applies effects to the V1 timeline without exporting '
+            'the whole video. Each saved transition shows a ↔ marker on V1. '
+            'The source monitor cannot play FFmpeg crossfades; use Preview '
+            'selected cut for a short in-app preview. '
+            'Leave styles unchecked for automatic randomization.')
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
         layout.addWidget(QLabel('Available transitions (check the styles you want)'))
@@ -2604,6 +2624,13 @@ class Editor(QMainWindow):
             layout.addWidget(QLabel('Timeline warning: '+str(exc)))
         boundaries.setEnabled(False)
         automatic.toggled.connect(lambda enabled:boundaries.setEnabled(not enabled))
+        preview_picker=QComboBox()
+        for index in cuts:
+            preview_picker.addItem(
+                f'Trim {index} — {tc(v1[index]["at"])}',index)
+        preview_picker.setToolTip('Choose one V1 cut for the short in-app preview')
+        layout.addWidget(QLabel('Cut to preview'))
+        layout.addWidget(preview_picker)
         ending=QCheckBox('Fade video to black and audio to silence at the end (1 second)')
         ending.setChecked(bool(v1 and v1[-1].get('eli_end_fade')))
         layout.addWidget(ending)
@@ -2628,11 +2655,15 @@ class Editor(QMainWindow):
             'border:1px solid #96515e; font-weight:700; }'
             'QPushButton:hover { background:#79414e; }')
         actions.addWidget(apply_btn,2)
-        preview_btn=self.button('▶ Rendered Preview',lambda checked=False:None)
+        preview_btn=self.button('▶ Preview selected cut',lambda checked=False:None)
         actions.addWidget(preview_btn,1)
         def do_preview():
-            dlg.close()
-            QTimer.singleShot(0,self.rendered_preview)
+            index=preview_picker.currentData()
+            if index is None:
+                QMessageBox.information(dlg,'Eli — Cut Preview',
+                                        'Add two or more V1 clips first.')
+                return
+            self.preview_transition_cut(int(index),parent=dlg)
         preview_btn.clicked.connect(lambda checked=False:do_preview())
         def let_eli_work():
             selected=[key for key,widget in style_checks.items()
@@ -2659,7 +2690,8 @@ class Editor(QMainWindow):
                 f'{max(0,len(v1)-1)} trims. '
                 f'Transition duration: {slider.value()/100.:.2f}s. '
                 f'Styles: {"selected" if selected else "randomized"}. '
-                'Use Rendered Preview to verify the MP4 output.')
+                'Applied to V1 — ↔ markers show saved transitions. '
+                'Preview selected cut without exporting the full video.')
             status.setText(summary)
             transition_report.setPlainText('\n'.join(
                 f'At {tc(entry["output_seconds"])}: {entry["style"]} '
@@ -2669,10 +2701,132 @@ class Editor(QMainWindow):
                 for entry in report))
             transition_report.verticalScrollBar().setValue(0)
             self.note.setText(
-                f'Eli applied {sum(x["applied_now"] for x in report)} '
-                'timeline transitions. Render a preview to inspect them.')
+                f'Eli saved {sum(x["applied_now"] for x in report)} '
+                'V1 transitions. No full video was exported.')
         apply_btn.clicked.connect(lambda checked=False:let_eli_work())
         dlg.exec()
+
+    def preview_transition_cut(self,boundary,parent=None):
+        """Preview a single edited cut in-app. The complete edit is NOT exported.
+
+        The few-second sample is rendered with the same export filtergraph,
+        then deleted when the in-app preview closes.
+        """
+        import shutil
+        from media import eli_transition_profile
+        existing=getattr(self,'_transition_sample_worker',None)
+        if existing is not None and existing.isRunning():
+            QMessageBox.information(parent or self,'Eli — Cut Preview',
+                                    'Another cut preview is still rendering.')
+            return
+        try:
+            ordered,cuts=scene_cut_indices(self.clips)
+            if boundary not in cuts:
+                raise ValueError('This V1 trim is no longer on the timeline.')
+            previous=dict(ordered[boundary-1])
+            following=dict(ordered[boundary])
+            policy=eli_transition_profile(previous,following)
+            if policy['kind']!='blend':
+                raise ValueError(
+                    'This cut has no applied transition. Click Let Eli Work first.')
+            seconds=float(policy['overlap'])
+            a_rate=max(.01,float(previous.get('speed',1.)))
+            b_rate=max(.01,float(following.get('speed',1.)))
+            a_length=(float(previous['end'])-float(previous['start']))/a_rate
+            b_length=(float(following['end'])-float(following['start']))/b_rate
+            before=min(a_length,max(2*seconds,2.5))
+            after=min(b_length,max(2*seconds,2.5))
+            if before<2*seconds-.005 or after<2*seconds-.005:
+                raise ValueError('These clips are too short for the fade duration.')
+            # Preserve source timestamps; change only the small preview's trim.
+            previous['start']=float(previous['end'])-before*a_rate
+            previous['at']=0.
+            previous['transition']='fade'
+            previous['crossfade_seconds']=seconds
+            previous['eli_auto_montage']=True
+            previous['eli_end_fade']=False
+            following['end']=float(following['start'])+after*b_rate
+            following['at']=before
+            following['eli_force_transition']=True
+            following['crossfade_seconds']=seconds
+            following['eli_auto_montage']=True
+            following['eli_end_fade']=False
+        except (KeyError,TypeError,ValueError) as exc:
+            QMessageBox.warning(parent or self,'Eli — Cut Preview',str(exc))
+            return
+        directory=tempfile.mkdtemp(prefix='Eli_Studio_Cut_Preview_')
+        preview_file=os.path.join(directory,'sample.mp4')
+        dialog=QDialog(parent or self)
+        dialog.setWindowTitle(
+            f'Eli — Preview Trim {boundary}: '
+            +TRANSITION_STYLES[following['transition']])
+        dialog.resize(720,515)
+        layout=QVBoxLayout(dialog)
+        notice=QLabel('Previewing this cut only. Your complete video is not being exported.')
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        progress=QProgressBar(dialog)
+        progress.setRange(0,100)
+        layout.addWidget(progress)
+        screen=QVideoWidget(dialog)
+        screen.setMinimumHeight(300)
+        layout.addWidget(screen,1)
+        row=QHBoxLayout()
+        layout.addLayout(row)
+        replay=self.button('▶ Replay',lambda checked=False:None)
+        replay.setEnabled(False)
+        row.addWidget(replay)
+        row.addWidget(self.button('Close preview',dialog.close))
+        player=QMediaPlayer(dialog)
+        audio=QAudioOutput(dialog)
+        player.setAudioOutput(audio)
+        player.setVideoOutput(screen)
+        audio.setVolume(.8)
+        replay.clicked.connect(
+            lambda checked=False:(player.setPosition(0),player.play()))
+        worker=ExportWorker(
+            [previous,following],preview_file,'cpu','fast',1280,720,30)
+        self._transition_sample_worker=worker
+        self._transition_sample_dialog=dialog
+        state={'closed':False,'cleaned':False}
+        def cleanup():
+            if state['cleaned'] or worker.isRunning():
+                return
+            state['cleaned']=True
+            player.stop()
+            player.setSource(QUrl())
+            shutil.rmtree(directory,ignore_errors=True)
+        def on_close(_):
+            state['closed']=True
+            player.stop()
+            player.setSource(QUrl())
+            cleanup()
+        dialog.finished.connect(on_close)
+        worker.finished.connect(lambda:cleanup() if state['closed'] else None)
+        worker.progress.connect(
+            lambda value:progress.setValue(max(0,min(100,value))))
+        def succeeded(_):
+            if state['closed']:
+                cleanup()
+                return
+            notice.setText(
+                f'{TRANSITION_STYLES[following["transition"]]} '
+                f'({seconds:.2f}s). This temporary sample will be deleted '
+                'when you close this window.')
+            progress.setValue(100)
+            player.setSource(QUrl.fromLocalFile(preview_file))
+            replay.setEnabled(True)
+            player.play()
+        def failed(message):
+            if state['closed']:
+                cleanup()
+            else:
+                notice.setText('Cut preview failed: '+message)
+        worker.success.connect(succeeded)
+        worker.failed.connect(failed)
+        dialog.show()
+        dialog.raise_()
+        worker.start()
 
     def save_project(self,save_as=False):
         path=self.project_path if not save_as else None
@@ -2788,7 +2942,18 @@ class Editor(QMainWindow):
         self.time_label.setText(f'{tc(self.playhead)} / {tc(total)}');self.timeline_time.setText(f'{tc(self.playhead)} / {tc(total)}')
         self.scrub.blockSignals(True);self.scrub.setValue(round(10000*self.playhead/max(total,.001)));self.scrub.blockSignals(False)
         if self.selected is not None and self.selected<len(self.clips):
-            c=self.clips[self.selected];self.clip_name.setText(Path(c['path']).name+f'\\n{c["track"]}  •  {tc(duration(c))}  •  {c.get("speed",1.):g}×')
+            c=self.clips[self.selected]
+            transition_note=''
+            if (c['track']=='V1' and c.get('transition') in TRANSITION_STYLES
+                    and float(c.get('crossfade_seconds',0))>=.05
+                    and float(c.get('at',0))>.01):
+                transition_note=(
+                    f'\\n↔ {TRANSITION_STYLES[c["transition"]]} '
+                    f'— {float(c["crossfade_seconds"]):.2f}s (export effect)')
+            self.clip_name.setText(
+                Path(c['path']).name+
+                f'\\n{c["track"]}  •  {tc(duration(c))}  •  {c.get("speed",1.):g}×'
+                +transition_note)
             self.speed_control.blockSignals(True);self.speed_control.setValue(c.get('speed',1.));self.speed_control.blockSignals(False)
             self.position.blockSignals(True);self.position.setValue(c['at']);self.position.blockSignals(False)
             self.effect_choice.blockSignals(True);self.effect_choice.setCurrentText(c.get('effect','None'));self.effect_choice.blockSignals(False)

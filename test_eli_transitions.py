@@ -221,3 +221,16 @@ assert "transition_report.setMaximumHeight(155)" in source_gui
 assert "transition_report.setPlainText(" in source_gui
 assert "transition_report.verticalScrollBar().setValue(0)" in source_gui
 print('PASS: 200+ transition entries are displayed in a bounded scroll area')
+
+# v1.0.23: Let Eli Work changes V1 metadata; preview only the chosen cut
+# using the real FFmpeg path, never the complete source recording.
+gui_text=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "self.clips=revised" in gui_text
+assert "No full video was exported." in gui_text
+assert "symbol=sc.addSimpleText('↔')" in gui_text
+assert "def preview_transition_cut(self,boundary,parent=None):" in gui_text
+assert "[previous,following],preview_file,'cpu','fast',1280,720,30" in gui_text
+assert "shutil.rmtree(directory,ignore_errors=True)" in gui_text
+assert "preview_btn=self.button('▶ Preview selected cut'" in gui_text
+assert "QTimer.singleShot(0,self.rendered_preview)" not in gui_text
+print('PASS: saved timeline transitions and short disposable in-app cut preview')
