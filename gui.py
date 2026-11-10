@@ -2398,9 +2398,10 @@ class Editor(QMainWindow):
         title.setStyleSheet('font-size:18px;font-weight:700;color:#25e2df;')
         layout.addWidget(title)
         introduction=QLabel(
-            'Eli inspects the edited V1 timeline to find scene cuts. '
-            'Pick one or more transition styles below; leave all unchecked '
-            'to let Eli randomize styles. No gameplay vision rescan is needed.')
+            'Eli examines EVERY trimmed V1 clip boundary, including consecutive '
+            'parts of the original recording. Select styles below, or leave all '
+            'unchecked to randomize. No gameplay vision rescan is needed. '
+            'Adjacent source frames may make the visual blend subtle.')
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
         layout.addWidget(QLabel('Available transitions (check the styles you want)'))
@@ -2426,11 +2427,11 @@ class Editor(QMainWindow):
                 f'Transition duration: {value/100:.2f} seconds'))
         layout.addWidget(slider)
         layout.addWidget(QLabel('Apply transitions at'))
-        automatic=QCheckBox('Let Eli detect all genuine scene cuts automatically')
+        automatic=QCheckBox('Automatically select ALL V1 clip trims (recommended)')
         automatic.setChecked(True)
         layout.addWidget(automatic)
         layout.addWidget(QLabel(
-            'Optional: uncheck automatic mode to manually choose clip boundaries.'))
+            'Optional: turn off automatic selection to check individual trims.'))
         boundaries=QListWidget()
         layout.addWidget(boundaries,2)
         try:
@@ -2439,7 +2440,7 @@ class Editor(QMainWindow):
                 before=v1[index-1]
                 current=v1[index]
                 item=QListWidgetItem(
-                    f'Cut {index}  •  output {tc(current["at"])}  '
+                    f'Trim {index}  •  output {tc(current["at"])}  '
                     f'•  {Path(before["path"]).name} → {Path(current["path"]).name}')
                 item.setFlags(item.flags()|Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Unchecked)
@@ -2453,7 +2454,9 @@ class Editor(QMainWindow):
         ending=QCheckBox('Fade video to black and audio to silence at the end (1 second)')
         ending.setChecked(bool(v1 and v1[-1].get('eli_end_fade')))
         layout.addWidget(ending)
-        status=QLabel('Ready. Click Let Eli Work to analyze V1 cut boundaries.')
+        status=QLabel(
+            f'Ready: {len(cuts)} of {max(0,len(v1)-1)} V1 trim boundaries '
+            'selected automatically. Click Let Eli Work to assign effects.')
         status.setWordWrap(True)
         layout.addWidget(status)
         actions=QHBoxLayout()
@@ -2490,14 +2493,17 @@ class Editor(QMainWindow):
             self.clips=revised
             self.update_all()
             summary=(
-                f'Eli inspected {len(report)} scene boundaries. '
-                f'Updated {sum(x["applied_now"] for x in report)} cuts. '
+                f'Eli inspected {len(report)} V1 trim boundaries. '
+                f'Updated {sum(x["applied_now"] for x in report)} of '
+                f'{max(0,len(v1)-1)} trims. '
                 f'Duration target: {slider.value()/100.:.2f}s. '
                 f'Styles: {"selected" if selected else "randomized"}. '
                 'Click Rendered Preview to see the real transitions.\n'
                 + '\n'.join(
                     f'At {tc(entry["output_seconds"])}: {entry["style"]} '
                     f'({entry["duration"]:.2f}s)'
+                    +(' — consecutive source frames: effect can be subtle'
+                      if entry.get('source_contiguous') else '')
                     for entry in report))
             status.setText(summary)
             self.note.setText(

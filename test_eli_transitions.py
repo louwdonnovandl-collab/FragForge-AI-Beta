@@ -187,3 +187,28 @@ media_text=Path(__file__).with_name('media.py').read_text(encoding='utf-8')
 assert "len(primary) > 1 and eli_requested" in media_text
 assert "last['eli_end_fade'] if 'eli_end_fade' in last" in media_text
 print('PASS: explicit optional end fade does not disable scene transitions')
+
+# Regression: every timeline trim must be selected by Let Eli Work, even
+# if the source file and footage are adjacent on the source recording.
+same_source=[
+    dict(a,path='recording.mp4',start=0.,end=4.,at=0.),
+    dict(b,path='recording.mp4',start=4.,end=8.,at=4.),
+    dict(c,path='recording.mp4',start=12.,end=16.,at=8.)]
+_,all_trims=scene_cut_indices(same_source)
+assert all_trims==[1,2],all_trims
+all_planned,all_report=plan_montage_transitions(
+    same_source,['fade'],.5,fade_ending=False)
+assert len(all_report)==2 and all(x['applied_now'] for x in all_report),all_report
+assert all_planned[1]['eli_force_transition']
+assert all_planned[2]['eli_force_transition']
+assert all_report[0]['source_contiguous'] and not all_report[1]['source_contiguous']
+source_join=eli_transition_profile(same_source[0],same_source[1])
+assert source_join['kind']=='join'
+forced_join=eli_transition_profile(all_planned[0],all_planned[1])
+assert forced_join['kind']=='blend' and abs(forced_join['overlap']-.5)<.001
+manual_one,manual_report=plan_montage_transitions(
+    same_source,['pixelize'],.5,manual_boundaries=[2])
+assert not manual_report[0]['applied_now'] and manual_report[1]['applied_now']
+assert manual_one[2]['transition']=='pixelize'
+assert not manual_one[1].get('eli_force_transition',False)
+print('PASS: automatic selects all trim boundaries, including adjacent source footage')

@@ -17,11 +17,24 @@ TRANSITION_STYLES = {
 }
 
 
-def scene_cut_indices(clips):
-    """Return V1 pair indexes (1-based next-clip indexes) for actual scene cuts.
+def source_contiguous(before,after):
+    """Whether two V1 clips refer to adjacent source frames at equal speed."""
+    import os
+    same_file=(os.path.normcase(os.path.abspath(str(before['path'])))
+               ==os.path.normcase(os.path.abspath(str(after['path']))))
+    return (same_file
+            and abs(float(before['end'])-float(after['start']))<=.05
+            and abs(float(before.get('speed',1.))
+                    -float(after.get('speed',1.)))<=.0001)
 
-    Clip joins from the same file at the same source timestamp and speed
-    are continuous and intentionally get no transition.
+
+def scene_cut_indices(clips):
+    """Return ALL valid V1 trim boundaries, including source-contiguous splits.
+
+    Previously, source-contiguous trims were silently excluded from Let Eli
+    Work. Clip boundaries are editorial decisions, even when source frames
+    happen to be adjacent. Do not mistake a continuous source split for an
+    automatically ineligible transition.
     """
     import os
     ordered=sorted(
@@ -32,13 +45,9 @@ def scene_cut_indices(clips):
         duration=(float(before['end'])-float(before['start'])) / max(.01,float(before.get('speed',1.)))
         if abs(float(after.get('at',0))-float(before.get('at',0))-duration)>.04:
             raise ValueError('V1 contains a gap or overlap. Fix the timeline before using Eli transitions.')
-        same_file=(os.path.normcase(os.path.abspath(str(before['path'])))
-                   ==os.path.normcase(os.path.abspath(str(after['path']))))
-        continuous=(same_file
-                    and abs(float(before['end'])-float(after['start']))<=.05
-                    and abs(float(before.get('speed',1.))-float(after.get('speed',1.)))<=.0001)
-        if not continuous:
-            cuts.append(index)
+        # All timeline trims count. Eli only skips gaps or overlaps it cannot
+        # render safely; source-contiguous clips are still eligible.
+        cuts.append(index)
     return ordered,cuts
 
 
@@ -47,8 +56,9 @@ def plan_montage_transitions(clips, selected_styles=(), seconds=.5,
                              fade_ending=None):
     """Plan transitions WITHOUT modifying clips or rescanning source footage.
 
-    No chosen style => randomize from ten presets. Default boundaries => all
-    real timeline cuts. Manual selections affect only named boundaries.
+    No chosen style => randomize from ten presets. Automatic mode covers
+    EVERY adjacent V1 clip boundary, including cuts between consecutive
+    source frames. Manual selections affect only named boundaries.
     Every selected cut is validated against the chosen duration BEFORE apply.
     """
     import random
@@ -63,12 +73,14 @@ def plan_montage_transitions(clips, selected_styles=(), seconds=.5,
     planned=[dict(c) for c in clips]
     ordered,cuts=scene_cut_indices(planned)
     if len(ordered)<2 or not cuts:
-        raise ValueError('No separate V1 scenes found. Add at least two different scene clips.')
+        raise ValueError(
+            'No V1 clip boundaries found. Split or add at least two V1 clips '
+            'before asking Eli to apply transitions.')
     chosen=set(cuts) if manual_boundaries is None else set(int(i) for i in manual_boundaries)
     if not chosen:
         raise ValueError('Select at least one boundary or enable automatic detection.')
     if chosen-set(cuts):
-        raise ValueError('Some selected boundaries are continuous footage or not valid cuts.')
+        raise ValueError('Some selected boundaries are not valid V1 clip joins.')
 
     available=tuple(selected_styles) if selected_styles else tuple(TRANSITION_STYLES)
     generator=rng if rng is not None else random.SystemRandom()
@@ -83,17 +95,19 @@ def plan_montage_transitions(clips, selected_styles=(), seconds=.5,
             c['crossfade_seconds']=seconds
             c['transition']='fade'
             continue
-        if index not in cuts:
-            c['transition']='cut'
-            c['crossfade_seconds']=0.
-            continue
+        contiguous=source_contiguous(ordered[index-1],c)
         if index in chosen:
             c['transition']=generator.choice(available)
             c['crossfade_seconds']=seconds
+            # A separate clip created by a trim is a real editorial boundary,
+            # even when its source frames are adjacent. The renderer must not
+            # silently override the user's selected style with a hard join.
+            c['eli_force_transition']=True
         elif c['transition'] not in TRANSITION_STYLES:
             c['transition']='cut'
             c['crossfade_seconds']=0.
-        # An unselected boundary retains its existing valid styling.
+            c['eli_force_transition']=False
+        # Unselected joins retain their previous setting, if any.
         policy=eli_transition_profile(ordered[index-1],c)
         report.append({
             'boundary':index,
@@ -101,6 +115,9 @@ def plan_montage_transitions(clips, selected_styles=(), seconds=.5,
             'style':TRANSITION_STYLES.get(c['transition'],'Cut'),
             'duration':round(float(policy['overlap']),3),
             'applied_now':index in chosen,
+            'source_contiguous':contiguous,
+            'note':('Adjacent source frames can make a dissolve subtle'
+                    if contiguous and index in chosen else ''),
         })
 
     if fade_ending is None:

@@ -83,7 +83,7 @@ def eli_transition_profile(previous, following):
                 and abs(float(previous['end'])-float(following['start']))<=.05
                 and abs(float(previous.get('speed',1.))
                         -float(following.get('speed',1.)))<=.0001)
-    if continuous:
+    if continuous and not following.get('eli_force_transition',False):
         return {'kind':'join','overlap':0.,'preroll':0.,'freeze_pad':0.}
     mode=str(following.get('transition','fade')).lower()
     if mode=='cut':
