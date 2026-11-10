@@ -172,7 +172,7 @@ assert all(abs(quiet_cut-t)>=2.5 for t in spikes),quiet_cut
 assert _quiet_seam(
     70.,84.,0.,2858.,spikes,[],[(69.,85.,.9)]) is None
 assert _quiet_seam(
-    70.,84.,0.,2858.,spikes,[75.,78.,81.],[]) is None
+    70.,84.,0.,2858.,spikes,[72.,75.,78.,81.,84.],[]) is None
 new_blocks,seams,_,_,_=_build_blocks(
     [(0.,2858.,1.)],peaks,quiet,[],[])
 assert len(new_blocks)>=12,(len(new_blocks),seams[:10])
