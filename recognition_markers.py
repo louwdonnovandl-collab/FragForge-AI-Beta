@@ -11,7 +11,7 @@ VISUAL_EVENTS = {'combat', 'looting', 'walking', 'driving', 'menu', 'other',
                  'explosion', 'victory', 'defeat', 'quiet', 'unknown'}
 
 
-def build_markers(vision_samples, audio_events, radius=3.0):
+def build_markers(vision_samples, audio_events, radius=3.0, action_sequences=()):
     """Fuse evidence without promoting volume spikes into specific sound claims."""
     markers = []
     for frame in vision_samples or []:
@@ -33,6 +33,18 @@ def build_markers(vision_samples, audio_events, radius=3.0):
                                 'confidence':round(blood_conf,3),'source':'vision',
                                 'audio_correlated':bool(nearby),'verified':False,
                                 'note':'Possible visible blood in one sampled frame; not a confirmed hit, new splatter or kill'})
+    for sequence in action_sequences or []:
+        t=max(0.,float(sequence.get('time',0)))
+        action=sequence.get('action','none')
+        confidence=float(sequence.get('confidence',0))
+        if action!='none':
+            markers.append({
+                'time':round(t,2),'event':'action_'+action,
+                'confidence':round(confidence,3),
+                'source':'temporal_vision',
+                'audio_correlated':bool(sequence.get('audio_support')),
+                'verified':False,
+                'note':'Three-frame motion estimate; not verified shooting, hit or kill'})
     for event in audio_events or []:
         t = max(0., float(event.get('time', 0)))
         # Audio transient means a sudden amplitude change, NOT a gunshot.
@@ -49,13 +61,15 @@ def timecode(seconds):
 
 
 def director_report(markers, max_lines=25):
-    visual = [m for m in markers if m['source'] == 'vision']
+    visual = [m for m in markers if m['source'] in ('vision','temporal_vision')]
     audio = [m for m in markers if m['source'] == 'audio']
-    combat = [m for m in visual if m['event'] == 'combat' and m['confidence'] >= .65]
+    combat = [m for m in visual if (m['event'] == 'combat' or
+              m['event'].startswith('action_'))
+              and m['confidence'] is not None and m['confidence'] >= .65]
     blood = [m for m in visual if m['event'] == 'blood_splatter_candidate']
-    lines = ["MR DIRECTOR — GAMEPLAY RECOGNITION REVIEW",
-             f"I sampled {len(visual)} gameplay frames and found {len(audio)} audio peaks.",
-             f"I identified {len(combat)} possible combat moments and {len(blood)} possible blood visuals. Neither verifies kills.",
+    lines = ["ELI — GAMEPLAY ACTION RECOGNITION REVIEW",
+             f"I recorded {len(visual)} visual marker estimates and {len(audio)} audio peaks.",
+             f"I identified {len(combat)} possible fighting/action markers and {len(blood)} possible blood visuals. No kills are verified.",
              "Audio peaks are not yet classified as gunshots, explosions or voices.",
              "Please check the timestamps and tell me which events are correct.", "", "CANDIDATE MARKERS"]
     for marker in markers[:max_lines]:

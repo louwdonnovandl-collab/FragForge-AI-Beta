@@ -61,6 +61,34 @@ def interpret_request(text):
     no_sounds = no_music or no_sfx or bool(re.search(r'\b(no|without|avoid)\s+(?:random\s+)?(?:sound|audio|boom|sfx|music)',t))
     no_fx = bool(re.search(r'\b(no|without|avoid)\s+(?:visual\s+)?(?:effects?|fx|zooms?)',t))
     music = not no_music and not no_sounds and bool(re.search(r'\b(?:add|insert|include|use|play|select|choose|put|with|background)\b[^.!?\n]{0,60}\b(?:music|songs?|soundtrack|background track)\b|\b(?:music|song|soundtrack)\s*:',t))
+    # "Prioritize combat" is a ranking instruction, not "combat only".
+    # Only an EXPLICIT exclusive instruction may reject supporting gameplay.
+    combat_only=bool(re.search(
+        r'\b(?:only|exclusively|just|nothing but)\s+(?:actual\s+)?'
+        r'(?:combat|fighting|fights?|kills?|zombie attacks?)\b'
+        r'|\b(?:combat|fighting|fights?|kills?)\s+only\b'
+        r'|\b(?:no|without)\s+(?:any\s+)?(?:noncombat|filler|supporting footage)\b',t))
+    priority_combat=bool(focus_kills and re.search(
+        r'\b(?:prioriti[sz]e|focus|first|start with|lead with|mostly)\b',t))
+    transitions_explicit=bool(re.search(
+        r'\b(?:cross[- ]?fades?|dissolves?|transitions?|ripple|turbulence|'
+        r'wipes?|slides?)\b',t))
+    style=('radial' if 'ripple' in t else
+           'pixelize' if 'turbulence' in t else 'fade')
+    seconds=0.5
+    # "ripple transition between cuts at 1 second fades" belongs to
+    # the transition length; it is not the total output duration.
+    transition_time=(re.search(
+        r'(?:transition|cross[- ]?fade|ripple|wipe|dissolve)'
+        r'[^.!?\n]{0,55}?\b(\d+(?:[.,]\d+)?)\s*(?:seconds?|secs?|s\b)',t)
+        or re.search(
+        r'\b(\d+(?:[.,]\d+)?)\s*(?:seconds?|secs?|s\b)'
+        r'\s*(?:cross[- ]?fades?|transitions?|fades?|dissolves?)\b',t))
+    if transition_time and transitions_explicit:
+        seconds=max(.25,min(3.,float(transition_time.group(1).replace(',','.'))))
+    explicit_end=bool(re.search(
+        r'\b(?:fade\s+(?:the\s+)?(?:video\s+)?to\s+black|'
+        r'(?:final|ending|end)\s+fade(?:[- ]out)?|fade\s+out\s+at\s+the\s+end)\b',t))
     return {
         'mode':'highlight' if highlight or (target_seconds and target_seconds <= 180) else 'longform',
         'target_seconds':target_seconds,
@@ -76,10 +104,16 @@ def interpret_request(text):
         'explicit_speed':bool(speed_match),
         'focus_kills':focus_kills,
         'focus_loot':focus_loot,
-        'fade_transition':bool(re.search(r'\b(?:fades?|crossfades?|transitions?|dissolves?)\b',t)),
-        'crossfade_seconds':0.5,
+        'fade_transition':transitions_explicit,
+        'explicit_crossfade':transitions_explicit,
+        'transition_style':style,
+        'crossfade_seconds':seconds,
+        'explicit_end_fade':explicit_end,
         'end_fade_seconds':1.0,
-        'combat_first':bool(focus_kills and (highlight or target_seconds and target_seconds<=180)),
+        'combat_only':combat_only,
+        'combat_priority':priority_combat,
+        'combat_first':bool(focus_kills and (priority_combat or combat_only or highlight
+                                            or target_seconds and target_seconds<=180)),
         'max_noncombat_opening_seconds':3.0,
         'no_music':no_music,
         'original':text.strip(),
@@ -98,10 +132,17 @@ def describe_plan(p):
         'Target output duration: '+(f"{p.get('target_seconds',0):g} seconds" if p.get('target_seconds') else 'Automatic') ,
         'Create intro: '+(str(p['intro_seconds'])+' seconds' if p['intro_seconds'] else 'Not requested'),
         'Focus on kills: '+yes(p.get('focus_kills',False)),
+        'Combat policy: '+('Combat ONLY (explicit requirement)' if p.get('combat_only')
+                           else 'Combat FIRST; other gameplay allowed' if p.get('focus_kills')
+                           else 'General gameplay'),
         'Opening: '+('prioritize possible combat within first 3 seconds; do not claim a verified kill' if p.get('combat_first') else 'chronological/general footage'),
         'Focus on looting: '+yes(p.get('focus_loot',False)),
-        f"Export-only transitions: {p.get('crossfade_seconds',0.5):g}s crossfade between approved cuts",
-        f"Final fade: {p.get('end_fade_seconds',1):g}s fade to black and silence",
+        ('Export transitions: '+p.get('transition_style','fade')
+         +f" ({p.get('crossfade_seconds',0.5):g}s) — requested"
+         if p.get('explicit_crossfade') else
+         'Export transitions: Not requested (can be added in Transitions)'),
+        ('Final fade: '+f"{p.get('end_fade_seconds',1):g}s requested"
+         if p.get('explicit_end_fade') else 'Final fade: Not requested'),
         '',
         'SUPPORTED NOW: scene/motion analysis, long-form cuts, 2× pacing, fades, short-montage effects and soundboard.',
         'NOT YET AUTOMATED: speech transcription, semantic gameplay events, context-sensitive long-form effects, image-generated intros.',

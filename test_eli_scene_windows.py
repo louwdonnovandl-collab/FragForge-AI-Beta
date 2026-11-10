@@ -93,3 +93,44 @@ recognized=calibration_report(
      {'time':889.5,'event':'combat','confidence':.88}],889.)
 assert recognized['has_repeated_combat']
 print('PASS: benchmark timecodes and honest dense-scan diagnostics')
+
+
+from eli_action_reasoning import (
+    parse_sequence_reply,sequence_centers,temporal_action_windows,
+    merge_evidence_windows,corroborate_actions)
+import json
+for label in ('gunfire','punch','kick','weapon_swing','shove','impact'):
+    evidence=parse_sequence_reply(
+        {'response':json.dumps({
+            'action':label,'confidence':.83,'visible_change':True,
+            'attacker_target_interaction':True})},
+        889.,[888.25,889.,889.75])
+    assert evidence['combat_candidate'] and evidence['action']==label,evidence
+    assert evidence['frame_times']==[888.25,889.,889.75]
+    estimated=temporal_action_windows([evidence],2858.)
+    assert len(estimated)==1 and estimated[0][0]<889.<estimated[0][1]
+# Walking, stationary poses and non-contact impact never become combat.
+for payload in (
+    {'action':'walking','confidence':.9,'visible_change':True},
+    {'action':'gunfire','confidence':.9,'visible_change':False},
+    {'action':'impact','confidence':.95,'visible_change':True,
+     'attacker_target_interaction':False}):
+    action=parse_sequence_reply(
+        {'response':json.dumps(payload)},400.,[399.25,400.,400.75])
+    assert not action['combat_candidate'],action
+    assert not temporal_action_windows([action],2858.)
+# Acoustic transient is corroboration ONLY, never a shooting label.
+action=parse_sequence_reply(
+    {'response':json.dumps({'action':'punch','confidence':.8,
+                            'visible_change':True})},
+    250.,[249.25,250.,250.75])
+supported=corroborate_actions([action],[{'time':250.5,'strength':.7}])
+assert supported[0]['audio_support']
+centers=sequence_centers(
+    [{'time':889.,'event':'combat','confidence':.85}],
+    [(1300.,45.),(230.,35.),(2300.,40.),(30.,50.)],
+    2858.,5,889.)
+assert len(centers)<=5 and any(abs(t-889.)<1. for t in centers)
+joined=merge_evidence_windows([(888.,894.,.75)],[(889.,895.,.87)])
+assert len(joined)==1 and joined[0][0]==888. and joined[0][1]==895.
+print('PASS: temporal combat actions, sequence budget, audio-only safeguards')

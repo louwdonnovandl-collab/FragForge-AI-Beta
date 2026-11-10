@@ -98,7 +98,8 @@ def intro_from_activity(segments, peaks, seconds):
 
 
 def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=0,
-                      combat_markers=(), action_windows=(), require_action=False):
+                      combat_markers=(), action_windows=(), require_action=False,
+                      opening_priority_markers=()):
     """Select active excerpts for a duration-constrained montage.
 
     Activity peaks are visual-motion candidates, not confirmed kills. Returns
@@ -110,7 +111,7 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
     # For combat-focused requests, begin within a few seconds of the first
     # estimated fight instead of filling 20-30 seconds with earlier gameplay.
     # These are candidates, NOT verified kills.
-    markers=sorted(float(t) for t in combat_markers)
+    markers=sorted(float(t) for t in (combat_markers or opening_priority_markers))
     if markers:
         first_action=max(0.,markers[0]-3.*speed)
         eligible=[(max(a,first_action),b) for a,b in eligible

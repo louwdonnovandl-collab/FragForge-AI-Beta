@@ -4,6 +4,8 @@ from pathlib import Path
 from media import binary
 from ai_runtime import PROFILES, ollama_ram_gb, MemoryBudgetGuard
 from combat_calibration import calibration_sample_times, calibration_report
+from eli_action_reasoning import (parse_sequence_reply,sequence_centers,
+                                  temporal_action_windows)
 
 HOST='http://127.0.0.1:11434'
 
@@ -78,6 +80,39 @@ def classify_frame(path,seconds,model,profile="Balanced"):
             errors.append(str(exc))
     raise ValueError('Vision classification failed: '+'; '.join(errors))
 
+def classify_action_sequence(path,center,end,model,profile="Balanced"):
+    """Compare three ordered images for action motion, never a confirmed kill."""
+    interval=.75
+    times=[max(0.,min(float(end)-.15,float(center)+delta))
+           for delta in (-interval,0.,interval)]
+    if len(set(round(t,2) for t in times))<3:
+        raise ValueError('Insufficient footage for a temporal action sample')
+    images=[extract_frame(path,t,min(448,PROFILES[profile]['image_width']))
+            for t in times]
+    prompt=(
+        'You are comparing THREE CHRONOLOGICAL gameplay frames from '
+        'Project Zomboid: earlier, middle, later (0.75 seconds apart). '
+        'Identify motion evidence, not a static pose. Return exactly one JSON '
+        'object with keys: action, confidence, visible_change, '
+        'attacker_target_interaction. action is one of gunfire, punch, kick, '
+        'weapon_swing, shove, impact, none. gunfire means visual muzzle flash '
+        'or visible firing animation, not just holding a gun. punch means '
+        'arm striking, kick means leg striking, weapon_swing means visible '
+        'bat/axe/knife swing, shove means push/grapple, impact means visible '
+        'contact across frames. Only set visible_change=true when movement '
+        'is evidenced between these images. For impact, require actual '
+        'attacker-to-target interaction. Ordinary walking, aiming without '
+        'firing, looting, inventory screens, camera movement, and nearby '
+        'zombies alone should be none. Never claim a kill or exact gunshot '
+        'sound from still images. If uncertain say none with low confidence.')
+    payload={'model':model,'prompt':prompt,'images':images,'stream':False,
+             'think':False,'format':'json','keep_alive':'30s',
+             'options':{'temperature':0,'num_predict':384,
+                        'num_ctx':PROFILES[profile]['num_ctx']}}
+    response=_post(HOST+'/api/generate',payload,timeout=150)
+    return parse_sequence_reply(response,center,times)
+
+
 def initial_sample_times(end,budget,seed_times=()):
     """Spend coarse vision calls on both timeline coverage and motion hotspots."""
     end=max(.25,float(end))
@@ -110,11 +145,16 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
     from ollama_memory import release_model
     end=max(.25,float(end))
     budget=max(1,int(max_frames or PROFILES[profile]["max_frames"]))
-    broad=initial_sample_times(end,budget,seed_times)
+    # Reserve actual image slots for 3-frame action comparisons; do not
+    # increase total scanned images beyond the user-selected frame budget.
+    wants_actions='combat' in (requested_events or ())
+    sequence_limit=min(8,max(1,budget//16)) if wants_actions and budget>=24 else 0
+    still_budget=max(1,budget-3*sequence_limit)
+    broad=initial_sample_times(end,still_budget,seed_times)
     if reference_time is not None:
         # Reserve up to a third of the first pass for the supplied benchmark,
         # while keeping the same overall frame budget and timeline coverage.
-        coarse_limit=max(1,(budget+1)//2)
+        coarse_limit=max(1,(still_budget+1)//2)
         reference_quota=min(12,max(1,coarse_limit//3))
         reference_samples=calibration_sample_times(
             reference_time,end,reference_quota)
@@ -124,7 +164,7 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
         )[:remaining_coarse] if remaining_coarse else []
         broad=sorted(set(reference_samples+broad_rest))
     coarse_uniform_count=max(1,len(broad))
-    remaining=max(0,budget-len(broad))
+    remaining=max(0,still_budget-len(broad))
     try:
         coarse=_scan_samples(
             path,broad,model,
@@ -183,16 +223,41 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
                 if progress else None,cancel,profile)
         else:
             fine={'samples':[],'errors':[],'failed_frames':0}
+        # Target gunfire, punches, kicks, swings, shoves and impacts in
+        # selected multi-frame bursts. Missing/invalid model responses are
+        # recorded as errors and never invent action events.
+        sequences=[];sequence_errors=[]
+        if sequence_limit:
+            all_stills=coarse['samples']+fine['samples']
+            centers=sequence_centers(
+                all_stills,seed_times,end,sequence_limit,reference_time)
+            for i,center in enumerate(centers):
+                if cancel is not None and cancel.is_set():
+                    raise RuntimeError('Vision scan cancelled')
+                warning=MemoryBudgetGuard(profile).check(ollama_ram_gb())
+                if warning:raise RuntimeError(warning)
+                try:
+                    sequences.append(
+                        classify_action_sequence(path,center,end,model,profile))
+                except Exception as exc:
+                    sequence_errors.append(
+                        f'action sequence {center:.1f}s: {str(exc)[:150]}')
+                if progress:progress(
+                    min(budget,len(broad)+len(times)+3*(i+1)),budget)
         observations={float(x['time']):x for x in coarse['samples']}
         observations.update((float(x['time']),x) for x in fine['samples'])
         result=dict(coarse)
         result['samples']=sorted(observations.values(),key=lambda x:float(x['time']))
         result['coarse_frames']=len(coarse['samples'])
         result['refined_frames']=len(fine['samples'])
+        result['action_sequences']=sequences
+        result['action_frame_attempts']=3*len(centers) if sequence_limit else 0
+        result['action_errors']=sequence_errors[:10]
+        result['action_windows']=temporal_action_windows(sequences,end)
         result['max_frames']=budget
         result['failed_frames']+=fine.get('failed_frames',0)
         result['errors']+=fine.get('errors',[])
-        result['scan_method']='motion+targeted 1.5s frame sampling'
+        result['scan_method']='motion-guided stills + targeted 3-frame action reasoning'
         result['calibration']=calibration_report(result['samples'],reference_time)
         if progress:
             progress(budget,budget)

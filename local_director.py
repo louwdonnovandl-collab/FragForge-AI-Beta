@@ -124,19 +124,28 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
     from assistant_engine import interpret_request
     intent=parse_instruction(message)
     requested=interpret_request(message)
-    if requested['target_seconds'] and requested['mode']=='highlight':
+    if requested['target_seconds'] and (requested['mode']=='highlight' or requested.get('focus_kills')):
         opening=('Possible combat first (subject to frame evidence); '
                  if requested.get('combat_first') else '')
-        music=('no music; ' if requested.get('no_music') else
-               'music only if explicitly selected; ')
+        extras=[]
+        extras.append('combat only' if requested.get('combat_only') else
+                      'combat first, then worthwhile supporting scenes'
+                      if requested.get('focus_kills') else 'general gameplay')
+        if requested.get('explicit_crossfade'):
+            extras.append(
+                f"{requested.get('crossfade_seconds',.5):g}s "
+                +requested.get('transition_style','fade')+' transitions')
+        if requested.get('explicit_end_fade'):
+            extras.append('1s final fade to black and silence')
+        if requested.get('no_music'):
+            extras.append('no music')
+        elif requested.get('music'):
+            extras.append('background music requested')
         return (
             f"Edit instructions received: {requested['target_seconds']:g}s total; "
-            +opening
-            +f"{requested.get('crossfade_seconds',.5):g}s scene crossfades on MP4 export; "
-            +f"{requested.get('end_fade_seconds',1):g}s final fade to black and silence; "
-            +music
-            +"preserve gameplay audio. Nothing has been analyzed or changed yet. "
-            +"Select Prepare Edit to review source markers and proposed clips.")
+            +'; '.join(extras)
+            +'. Gameplay audio remains. Nothing analyzed or changed yet. '
+            +'Select Prepare Edit to review scenes before editing.')
 
     system=(
         'You are Eli, the integrated AI video editor inside Eli Studio. '

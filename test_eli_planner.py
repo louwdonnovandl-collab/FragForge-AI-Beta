@@ -105,3 +105,31 @@ assert "analyzed(cuts)  # Replan using cached evidence" in source_gui
 assert "status.setWordWrap(True)" in source_gui
 assert "'selected_target_seconds':float(target_duration.value())" in source_gui
 print('PASS: user-selected duration, readable warning, and cached replan')
+
+
+# Request semantics: prioritize means rank first, never prohibit filler.
+priority=interpret_request(
+    'make a 10 minute edit, prioritize combat, add ripple transition '
+    'between cuts at 1 second fades')
+assert priority['target_seconds']==600.,priority
+assert priority['focus_kills'] and priority['combat_first'],priority
+assert not priority['combat_only'],priority
+assert priority['explicit_crossfade'],priority
+assert priority['transition_style']=='radial',priority
+assert abs(priority['crossfade_seconds']-1.)<.001,priority
+assert not priority['explicit_end_fade'],priority
+only=interpret_request('Make a 60-second edit, only combat, no filler footage')
+assert only['combat_only'] and only['focus_kills'],only
+general=interpret_request('Create a 20-minute gameplay video')
+assert not general['focus_kills'] and not general['combat_only'],general
+# Strict behavior remains available ONLY by explicit wording.
+from local_director import chat_reply
+ack=chat_reply('Make a 10 minute video and prioritize combat')
+assert 'supporting scenes' in ack and 'combat only' not in ack,ack
+# Source correctness: no default strict blocks for prioritized edits.
+gui_text=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "pending.get('combat_only')" in gui_text
+assert "opening_priority_markers=unverified_opening" in gui_text
+assert "temporal_action_windows" in gui_text
+assert "action_sequences=result.get('action_sequences',[])" in gui_text
+print('PASS: 10-minute combat priority permits supporting scenes and temporal action evidence')

@@ -13,6 +13,8 @@ from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage
 from version import DISPLAY_NAME
 from vision_director import installed_models, scan as vision_scan, combat_windows, scene_windows
+from eli_action_reasoning import (temporal_action_windows,merge_evidence_windows,
+                                  corroborate_actions)
 from combat_calibration import parse_reference_timecode
 from audio_director import scan_audio, corroborate_vision
 from recognition_markers import build_markers, director_report, export_report
@@ -374,6 +376,10 @@ class VisionScanWorker(QThread):
                     audio=scan_audio(self.path,self.end,lambda pct:self.progress.emit(75+int(pct*.25)),self.cancel_event)
                     result['audio']=audio
                     result['samples']=corroborate_vision(result['samples'],audio['events'])
+                    result['action_sequences']=corroborate_actions(
+                        result.get('action_sequences',[]),audio['events'])
+                    result['action_windows']=temporal_action_windows(
+                        result['action_sequences'],self.end)
                 except Exception as exc:
                     result['audio']={'events':[],'status':'Audio analysis unavailable: '+str(exc)}
             self.ready.emit(result)
@@ -1289,7 +1295,9 @@ class Editor(QMainWindow):
                 and 'viewpoint' in source_name and 'day 1 survival' in source_name):
             calibration_time.setText('14:49')
         settings_layout.addWidget(calibration_time)
-        allow_unverified=QCheckBox('Allow unverified action montage if no combat timestamps are supplied')
+        allow_unverified=QCheckBox(
+            'For COMBAT-ONLY requests, allow additional general gameplay '
+            'when detected action is insufficient')
         allow_unverified.setChecked(False)
         settings_layout.addWidget(allow_unverified)
         vision_enabled=QCheckBox('Automatically scan gameplay with local vision AI (optional; slower)')
@@ -1315,8 +1323,10 @@ class Editor(QMainWindow):
             'Choose how many local AI images to evaluate. Smart uses motion '
             'peaks plus targeted checks near possible combat; Deep is slower.')
         settings_layout.addWidget(vision_detail)
-        vision_help=QLabel('Requires a vision-capable model. Try llava:7b if qwen3-vl:2b returns reasoning only.\n'
-                           'Eli estimates activity and scene boundaries from frames. Review before applying.')
+        vision_help=QLabel(
+            'Uses local vision to check sampled frames plus three-frame '
+            'motion sequences for shooting, punching, kicking, weapon swings, '
+            'shoving and possible impacts. These are estimates; review them.')
         vision_help.setWordWrap(True);settings_layout.addWidget(vision_help)
         install_vision=self.button('Install / update vision AI (Ollama)',lambda:None)
         settings_layout.addWidget(install_vision)
@@ -1463,6 +1473,8 @@ class Editor(QMainWindow):
                 'stage_2_parsed_intent':{
                     key:plan.get(key) for key in (
                         'target_seconds','mode','focus_kills','combat_first',
+                        'combat_only','combat_priority','transition_style',
+                        'explicit_crossfade','explicit_end_fade',
                         'max_noncombat_opening_seconds','requested_speed','no_music',
                         'music','crossfade_seconds','end_fade_seconds')},
                 'selected_target_seconds':float(target_duration.value()),
@@ -1472,6 +1484,10 @@ class Editor(QMainWindow):
                     'vision_enabled':vision_enabled.isChecked(),
                     'vision_model':vision_model.currentText() if vision_enabled.isChecked() else 'not scanned',
                     'vision_samples':len(vision.get('samples',[])),
+                    'action_sequences':vision.get('action_sequences',[]),
+                    'action_windows':vision.get('action_windows',[]),
+                    'action_frame_attempts':vision.get('action_frame_attempts',0),
+                    'action_errors':vision.get('action_errors',[]),
                     'vision_failed_frames':vision.get('failed_frames',0),
                     'coarse_frames':vision.get('coarse_frames',0),
                     'refined_frames':vision.get('refined_frames',0),
@@ -1485,6 +1501,8 @@ class Editor(QMainWindow):
                         for x in vision.get('samples',[])),
                     'combat_supported_windows':len(
                         state.get('estimated_scene_windows',[])),
+                    'recognition_note':state.get('recognition_note',''),
+                    'unverified_opening_candidates':state.get('unverified_opening',[]),
                     'estimated_combat_seconds':
                         state.get('estimated_combat_seconds',0),
                     'estimated_scene_windows':state.get('estimated_scene_windows',[]),
@@ -1607,17 +1625,24 @@ class Editor(QMainWindow):
                     state['user_markers']=list(confirmed)
                     observations=(state['vision'] or {}).get('samples',[])
                     automatic=combat_windows(observations,full_end) if focus else []
+                    temporal=(state.get('vision') or {}).get('action_windows',[]) if focus else []
                     loot_windows=(scene_windows(observations,full_end,event='looting')
                                   if pending and pending.get('focus_loot') else [])
-                    scene_estimates=automatic if focus else loot_windows
-                    if focus and automatic and not confirmed:
+                    scene_estimates=(merge_evidence_windows(automatic,temporal)
+                                     if focus else loot_windows)
+                    if focus and scene_estimates and not confirmed:
                         # Use actual positive sample times, never a fabricated
                         # midpoint; combat-first validation depends on this.
-                        for a,b,_ in automatic:
+                        temporal_hits=[
+                            float(x['time']) for x in
+                            (state.get('vision') or {}).get('action_sequences',[])
+                            if x.get('combat_candidate')]
+                        for a,b,_ in scene_estimates:
                             times=[float(x['time']) for x in observations
                                    if x.get('event')=='combat'
                                    and float(x.get('confidence',0))>=.65
                                    and a<=float(x['time'])<=b]
+                            times.extend(t for t in temporal_hits if a<=t<=b)
                             if times:confirmed.append(min(times))
                         confirmed=sorted(set(confirmed))
                     if not focus and loot_windows and not confirmed:
@@ -1629,7 +1654,7 @@ class Editor(QMainWindow):
                         [round(a,2),round(b,2),round(conf,3)]
                         for a,b,conf in scene_estimates]
                     state['combat_markers']=list(confirmed)
-                    if focus and not confirmed and not allow_unverified.isChecked():
+                    if focus and bool(pending and pending.get('combat_only')) and not confirmed and not allow_unverified.isChecked():
                         state['windows']=[]
                         state['planning_warning']=(
                             'Combat-first montage requires at least one candidate. '
@@ -1652,7 +1677,17 @@ class Editor(QMainWindow):
                     # Preserve corroborated candidates, then include other
                     # action-heavy visual peaks. The old ±8s filter removed
                     # most useful alternatives and filled time with idle footage.
-                    strict_combat=bool(focus and not allow_unverified.isChecked())
+                    strict_combat=bool(
+                        focus and pending and pending.get('combat_only')
+                        and not allow_unverified.isChecked())
+                    unverified_opening=[]
+                    if focus and not confirmed:
+                        ranked_motion=sorted(
+                            cuts.get('activity_peaks',[]),
+                            key=lambda row:-float(row[1]))
+                        if ranked_motion:
+                            unverified_opening=[float(ranked_motion[0][0])]
+                    state['unverified_opening']=unverified_opening
                     peaks=([(t,1000.) for t in confirmed]
                            + ([] if strict_combat else
                               [(t,min(80.,float(score)))
@@ -1664,7 +1699,8 @@ class Editor(QMainWindow):
                         base,peaks,target_duration.value(),playback_speed.value(),
                         runtime(intro),combat_markers=confirmed if focus else (),
                         action_windows=scene_estimates,
-                        require_action=strict_combat)
+                        require_action=strict_combat,
+                        opening_priority_markers=unverified_opening)
                     state['supporting_footage']=False
                     if not segments and focus and confirmed and not strict_combat:
                         # Only an explicitly permitted general montage can use fallback;
@@ -1720,6 +1756,11 @@ class Editor(QMainWindow):
                         max(0.,runtime(segments)-supported),2)
                     state['supporting_footage']=(
                         state['supporting_seconds']>.5)
+                    state['recognition_note']=(
+                        'Combat prioritized; supporting gameplay allowed.'
+                        if focus and not strict_combat else
+                        'Combat only requested explicitly.' if strict_combat
+                        else 'General gameplay edit.')
                     state['intro']=intro;state['segments']=segments
                     windows=[(a,b) for a,b,_ in segments]
                 else:
@@ -1799,7 +1840,16 @@ class Editor(QMainWindow):
                     f'OUT {tc(result_output)}  |  SOURCE {tc(a)} → {tc(b)}'
                     f' ({(b-a)/max(.01,rate):.1f}s at {rate:g}×) — {reason}')
             if state['segments']:
-                status.setText(f'Candidate output: {runtime(state["segments"])+runtime(state["intro"]):.1f}s; {len(cuts.get("stagnant",[]))} stagnant ranges; {len(combat_windows((state["vision"] or {}).get("samples",[]),full_end))} Eli combat estimates.' + (' Supporting gameplay added to meet duration; review before approval.' if state.get('supporting_footage') else '') + ' No unverified BOOM effects.')
+                status.setText(
+                    f'Candidate output: '
+                    f'{runtime(state["segments"])+runtime(state["intro"]):.1f}s; '
+                    f'{len(cuts.get("stagnant",[]))} stagnant ranges; '
+                    f'{len(state.get("estimated_scene_windows",[]))} '
+                    'Eli estimated combat/action windows. '
+                    +state.get('recognition_note','')
+                    +(' Supporting gameplay included; review before approval.'
+                      if state.get('supporting_footage') else '')
+                    +' No unverified BOOM effects.')
             else:
                 status.setText(f'Found {len(cuts)} scene changes. Review {len(windows)} suggested highlights.')
             analysis_bar.setValue(100);work_message.setText('Your edit is prepared. Review it before applying changes.')
@@ -1899,17 +1949,36 @@ class Editor(QMainWindow):
             worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))
             def done(result):
                 state['vision']=result
-                state['markers']=build_markers(result.get('samples',[]),result.get('audio',{}).get('events',[]))
+                state['markers']=build_markers(
+                    result.get('samples',[]),result.get('audio',{}).get('events',[]),
+                    action_sequences=result.get('action_sequences',[]))
                 markers_button.setEnabled(bool(state['markers']))
                 analyzed(cuts)
                 hits=combat_windows(result['samples'],full_end)
                 if result.get('audio'):status.setToolTip(result['audio'].get('status',''))
                 if result.get('failed_frames'):status.setToolTip((status.toolTip()+'\n' if status.toolTip() else '')+f'{result["failed_frames"]} vision frames failed classification')
-                if pending and pending.get('focus_kills') and not hits and not allow_unverified.isChecked() and not combat_markers.text().strip():
+                temporal_hits=result.get('action_windows',[])
+                if (pending and pending.get('combat_only') and
+                        not hits and not temporal_hits and
+                        not allow_unverified.isChecked() and
+                        not combat_markers.text().strip()):
                     apply.setEnabled(False)
-                    status.setText('Vision scan complete, but no credible combat candidates found. To create a general highlight montage, check Allow unverified footage and click Analyze video again; or enter known combat timestamps.')
-                elif hits:
-                    status.setText(status.text()+f' AI flagged {len(hits)} candidate combat frames; audio transients: {len(result.get("audio",{}).get("events",[]))}. Review before export.')
+                    status.setText(
+                        'Combat-only was explicitly requested but no temporal '
+                        'or repeated-frame fighting evidence was found. '
+                        'Provide timestamps or permit supporting gameplay.')
+                elif hits or temporal_hits:
+                    status.setText(
+                        status.text()+f' Eli estimated {len(hits)} still-frame '
+                        f'fight windows and {len(temporal_hits)} motion-based '
+                        f'action windows; audio transients: '
+                        f'{len(result.get("audio",{}).get("events",[]))}. '
+                        'Review before export.')
+                elif pending and pending.get('focus_kills'):
+                    status.setText(
+                        status.text()+' No specific fighting motion was recognized. '
+                        'A prioritized general gameplay edit is still available; '
+                        'activity peaks are unverified.')
                 # Keep completion visible, including cases where Apply is blocked.
                 analysis_bar.setValue(100)
                 editor_tabs.setCurrentWidget(scroll)
@@ -1997,16 +2066,19 @@ class Editor(QMainWindow):
                 f'Visual effects: {"Verified placements only" if effects.isChecked() else "None (no verified event mapping)"}\n'
                 f'Music: {"Selected" if music_path.text().strip() else "None"}\n'
                 f'Gameplay audio: {"Balanced with music" if music_path.text().strip() else "Preserved"}\n'
-                f'Crossfades: {max(0,len(windows)+len(state["intro"])-1)} scene merges, 0.5s each (export only)\n'
-                'Ending: 1.0s fade to black and gameplay-audio fade\n'
-                'Note: crossfades are rendered in the exported MP4; the live source preview shows hard cuts.\n\n'
+                f'Transitions: {("Requested " + str(pending.get("transition_style","fade")) + " (" + str(pending.get("crossfade_seconds",.5)) + "s)" if pending and pending.get("explicit_crossfade") else "None; add via Transitions")}\n'
+                f'Ending fade: {("Requested (1s)" if pending and pending.get("explicit_end_fade") else "Not requested")}\n'
+                'Note: preview the rendered MP4 to inspect effects; live source playback does not show them.\n\n'
                 'Approve this plan before changing the timeline?')
             if decision!=QMessageBox.Yes:return
-            if pending and pending.get('focus_kills') and not combat_markers.text().strip() and not combat_windows((state['vision'] or {}).get('samples',[]),full_end) and not allow_unverified.isChecked():
+            if (pending and pending.get('combat_only')
+                    and not combat_markers.text().strip()
+                    and not state.get('estimated_scene_windows')
+                    and not allow_unverified.isChecked()):
                 QMessageBox.warning(dlg,'Combat review required',
-                    'No confirmed or AI-estimated combat moments were found.\n\n'
-                    'Enter source timestamps for real combat, or explicitly allow an unverified action montage.\n'
-                    'The activity detector cannot reliably identify zombie kills.')
+                    'Combat ONLY was requested but no fighting candidates were recognized.\n\n'
+                    'Supply source timestamps or permit supporting footage. '
+                    'Motion and audio peaks alone cannot verify kills.')
                 return
             if pending and pending.get('focus_kills') and combat_markers.text().strip() and not state['segments']:
                 QMessageBox.warning(dlg,'No combat footage selected',
@@ -2046,10 +2118,17 @@ class Editor(QMainWindow):
                 # Render-only 0.5s scene dissolves preserve the exact timeline length.
                 # The last clip fades smoothly to black over its final second.
                 clip['fade']=0.
-                clip['transition']='fade'
-                clip['crossfade_seconds']=.5  # direct 100/0 -> 50/50 -> 0/100 opacity blend
+                want_transition=bool(pending and pending.get('explicit_crossfade'))
+                clip['transition']=(
+                    str(pending.get('transition_style','fade'))
+                    if want_transition else 'cut')
+                clip['crossfade_seconds']=(
+                    float(pending.get('crossfade_seconds',.5))
+                    if want_transition else 0.)
                 clip['eli_auto_montage']=True
-                clip['eli_end_fade']=(i==len(timeline)-1)
+                clip['eli_end_fade']=bool(
+                    pending and pending.get('explicit_end_fade')
+                    and i==len(timeline)-1)
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
                 if clip.get('audio') and music_path.text().strip():
