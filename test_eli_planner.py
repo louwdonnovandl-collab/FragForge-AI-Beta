@@ -160,3 +160,22 @@ assert "if target_duration.value()>=300. and not strict_combat:" in source_gui
 assert "segments,longform_report=plan_longform(" in source_gui
 assert "longform_scene_planner" in source_gui
 print('PASS: 15-minute edits use scene blocks instead of 4.5s motion slices')
+
+# v1.0.21 regression: regular motion peaks can appear inside an otherwise
+# low-motion interval. Quiet windows should remain eligible while true
+# action evidence and audio spikes protect a cut.
+from longform_scene_planner import _quiet_seam,_build_blocks
+spikes=[float(i)*12.+30. for i in range(1,200)]
+quiet_cut=_quiet_seam(70.,84.,0.,2858.,spikes,[],[])
+assert quiet_cut is not None and 70.<quiet_cut<84.,quiet_cut
+assert all(abs(quiet_cut-t)>=2.5 for t in spikes),quiet_cut
+assert _quiet_seam(
+    70.,84.,0.,2858.,spikes,[],[(69.,85.,.9)]) is None
+assert _quiet_seam(
+    70.,84.,0.,2858.,spikes,[75.,78.,81.],[]) is None
+new_blocks,seams,_,_,_=_build_blocks(
+    [(0.,2858.,1.)],peaks,quiet,[],[])
+assert len(new_blocks)>=12,(len(new_blocks),seams[:10])
+assert any(reason=='quiet' for _,reason in seams),seams[:10]
+assert all((b-a)>12. for a,b,*_ in new_blocks),new_blocks
+print('PASS: low-motion seams survive dense unverified spikes, actions remain protected')

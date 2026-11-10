@@ -29,6 +29,31 @@ def _safe(t,motion,audio,actions):
             and all(not a-5.<=t<=b+5. for a,b,_ in actions))
 
 
+def _quiet_seam(left,right,source_start,source_end,motion,audio,actions):
+    """Select a low-motion seam without mistaking nearby noisy peaks for action.
+
+    A measured quiet interval is stronger evidence of a possible safe editing
+    point than an isolated FFmpeg motion spike. However, nearby audio and
+    visually estimated fighting actions still block a cut. Check several
+    positions rather than only testing the quiet interval's midpoint.
+    """
+    low=max(float(left)+2.,float(source_start)+18.01)
+    high=min(float(right)-2.,float(source_end)-18.01)
+    if high<low:return None
+    midpoint=(float(left)+float(right))/2.
+    candidates=[min(high,low+i*.5)
+                for i in range(int((high-low)/.5)+2)]
+    safe=[]
+    for t in candidates:
+        if any(abs(t-x)<2.5 for x in motion):continue
+        if any(abs(t-x)<3. for x in audio):continue
+        if any(a-5.<=t<=b+5. for a,b,_ in actions):continue
+        nearest=min((abs(t-x) for x in motion),default=12.)
+        safe.append((min(12.,nearest),-abs(t-midpoint),t))
+    if not safe:return None
+    return max(safe)[2]
+
+
 def _build_blocks(segments,peaks,quiet,audio_events,action_windows):
     motion=sorted((float(t),float(v)) for t,v in peaks if float(v)>=4.)
     sound=sorted((float(x['time']),float(x.get('strength',0)))
@@ -45,8 +70,9 @@ def _build_blocks(segments,peaks,quiet,audio_events,action_windows):
         for qa,qb in quiet:
             left=max(start,float(qa));right=min(end,float(qb))
             if right-left>=10.:
-                t=(left+right)/2.
-                if start+18.<t<end-18. and _safe(t,times,sounds,action):
+                t=_quiet_seam(
+                    left,right,start,end,times,sounds,action)
+                if t is not None:
                     candidates[round(t,2)]='quiet'
         timeline=sorted(set(t for t in times+sounds if start<t<end))
         for a,b in zip([start]+timeline,timeline+[end]):
@@ -62,8 +88,15 @@ def _build_blocks(segments,peaks,quiet,audio_events,action_windows):
         while end-cursor>120.:
             nearby=[t for t in sorted_candidates
                     if cursor+28.<=t<=min(end-18.,cursor+125.)]
-            if not nearby:break
-            chosen=min(nearby,key=lambda t:abs(t-(cursor+76.)))
+            if nearby:
+                chosen=min(nearby,key=lambda t:abs(t-(cursor+76.)))
+            else:
+                # A long active stretch with no safe seam should remain intact,
+                # but must not hide later valid quiet intervals in the file.
+                later=[t for t in sorted_candidates
+                       if cursor+28.<=t<=end-18.]
+                if not later:break
+                chosen=later[0]
             cuts.append(chosen);cursor=chosen
         cuts.append(end)
         if len(cuts)>2 and cuts[-1]-cuts[-2]<18.:
