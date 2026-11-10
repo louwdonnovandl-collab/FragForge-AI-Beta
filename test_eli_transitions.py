@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from media import binary, export_layers, eli_transition_profile
+from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
 
 
 def run(args):
@@ -139,3 +140,42 @@ def check():
 
 if __name__ == "__main__":
     check()
+
+# UI palette is backed by FFmpeg's xfade transition enums, not placeholder
+# effects that display in the menu but disappear on MP4 export.
+assert len(TRANSITION_STYLES)==10,TRANSITION_STYLES
+assert all(item in TRANSITION_STYLES for item in
+           ('fade','dissolve','radial','pixelize','wipeleft','slideleft'))
+a=dict(path='scene-A.mp4',start=0.,end=5.,at=0.,track='V1',
+       kind='video',speed=1.,transition='fade',crossfade_seconds=.5)
+b=dict(path='scene-B.mp4',start=10.,end=15.,at=5.,track='V1',
+       kind='video',speed=1.,transition='fade',crossfade_seconds=.5)
+c=dict(path='scene-C.mp4',start=20.,end=25.,at=10.,track='V1',
+       kind='video',speed=1.,transition='fade',crossfade_seconds=.5)
+base=[a,b,c]
+_,cuts=scene_cut_indices(base)
+assert cuts==[1,2],cuts
+class Deterministic:
+    def __init__(self):self.index=0
+    def choice(self,items):
+        answer=items[self.index%len(items)];self.index+=1;return answer
+planned,report=plan_montage_transitions(base,(),.75,rng=Deterministic(),
+                                         fade_ending=True)
+assert len(report)==2 and all(row['applied_now'] for row in report),report
+assert all(row['duration']==.75 for row in report),report
+assert planned[1]['transition']!=planned[2]['transition'],report
+assert planned[2]['eli_end_fade']
+assert base[1]['transition']=='fade' and 'eli_auto_montage' not in base[1]
+selected,manual=plan_montage_transitions(
+    base,['pixelize'],.5,manual_boundaries=[2],fade_ending=False)
+assert manual[0]['applied_now']==False and manual[1]['applied_now']==True
+assert selected[2]['transition']=='pixelize'
+assert selected[1]['transition']=='fade'  # not selected: retain old style
+assert not selected[2]['eli_end_fade']
+try:
+    plan_montage_transitions(base,['pixelize'],3.)
+except ValueError as exc:
+    assert 'clips at least' in str(exc),exc
+else:
+    raise AssertionError('Overlong transition silently shortened')
+print('PASS: ten export-backed transition options, auto/random and manual cuts')

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QMediaDevices,QSoundEffect,QVideoSink
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from media import probe, export_layers, nvenc_available, binary
+from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage
@@ -2309,14 +2310,122 @@ class Editor(QMainWindow):
             c['duck_music']=bool(checked);self.capture_history();self.sync_timeline_audio()
 
     def open_transitions(self):
-        c=self.selected_clip()
-        if not c:QMessageBox.information(self,'Transitions','Select a timeline clip first.');return
-        choices=['None','Fade In + Out','Fade to Black','Zoom In','Glitch Cut']
-        value,ok=QInputDialog.getItem(self,'Clip Transitions','Transition style:',choices,0,False)
-        if ok:
-            c['transition']=value
-            if value!='None':c['fade']=max(.4,float(c.get('fade',0)))
-            self.update_all();self.note.setText('Transition: '+value+' (preview/export support varies by style)')
+        """Transitions panel: auto-find cuts, optional manual selection and export styles."""
+        dlg=QDialog(self)
+        dlg.setWindowTitle('Eli Studio — Transitions')
+        dlg.resize(795,710)
+        layout=QVBoxLayout(dlg)
+        title=QLabel('Scene Transitions')
+        title.setStyleSheet('font-size:18px;font-weight:700;color:#25e2df;')
+        layout.addWidget(title)
+        introduction=QLabel(
+            'Eli inspects the edited V1 timeline to find scene cuts. '
+            'Pick one or more transition styles below; leave all unchecked '
+            'to let Eli randomize styles. No gameplay vision rescan is needed.')
+        introduction.setWordWrap(True)
+        layout.addWidget(introduction)
+        layout.addWidget(QLabel('Available transitions (check the styles you want)'))
+        styles=QGridLayout()
+        layout.addLayout(styles)
+        style_checks={}
+        for position,(key,label) in enumerate(TRANSITION_STYLES.items()):
+            checkbox=QCheckBox(label)
+            styles.addWidget(checkbox,position//2,position%2)
+            style_checks[key]=checkbox
+        slider_title=QLabel('Transition duration: 0.50 seconds')
+        layout.addWidget(slider_title)
+        slider=QSlider(Qt.Horizontal)
+        slider.setMinimum(25)
+        slider.setMaximum(300)
+        slider.setValue(50)
+        slider.setSingleStep(5)
+        slider.setPageStep(25)
+        slider.setTickInterval(25)
+        slider.setTickPosition(QSlider.TicksBelow)
+        slider.valueChanged.connect(
+            lambda value:slider_title.setText(
+                f'Transition duration: {value/100:.2f} seconds'))
+        layout.addWidget(slider)
+        layout.addWidget(QLabel('Apply transitions at'))
+        automatic=QCheckBox('Let Eli detect all genuine scene cuts automatically')
+        automatic.setChecked(True)
+        layout.addWidget(automatic)
+        layout.addWidget(QLabel(
+            'Optional: uncheck automatic mode to manually choose clip boundaries.'))
+        boundaries=QListWidget()
+        layout.addWidget(boundaries,2)
+        try:
+            v1,cuts=scene_cut_indices(self.clips)
+            for index in cuts:
+                before=v1[index-1]
+                current=v1[index]
+                item=QListWidgetItem(
+                    f'Cut {index}  •  output {tc(current["at"])}  '
+                    f'•  {Path(before["path"]).name} → {Path(current["path"]).name}')
+                item.setFlags(item.flags()|Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                item.setData(Qt.UserRole,index)
+                boundaries.addItem(item)
+        except ValueError as exc:
+            v1,cuts=[],[]
+            layout.addWidget(QLabel('Timeline warning: '+str(exc)))
+        boundaries.setEnabled(False)
+        automatic.toggled.connect(lambda enabled:boundaries.setEnabled(not enabled))
+        ending=QCheckBox('Fade video to black and audio to silence at the end (1 second)')
+        ending.setChecked(bool(v1 and v1[-1].get('eli_end_fade')))
+        layout.addWidget(ending)
+        status=QLabel('Ready. Click Let Eli Work to analyze V1 cut boundaries.')
+        status.setWordWrap(True)
+        layout.addWidget(status)
+        actions=QHBoxLayout()
+        layout.addLayout(actions)
+        apply_btn=self.button('Let Eli Work',lambda checked=False:None)
+        apply_btn.setStyleSheet(
+            'QPushButton { background:#60353f; color:#fff0f2; '
+            'border:1px solid #96515e; font-weight:700; }'
+            'QPushButton:hover { background:#79414e; }')
+        actions.addWidget(apply_btn,2)
+        preview_btn=self.button('▶ Rendered Preview',lambda checked=False:None)
+        actions.addWidget(preview_btn,1)
+        def do_preview():
+            dlg.close()
+            QTimer.singleShot(0,self.rendered_preview)
+        preview_btn.clicked.connect(lambda checked=False:do_preview())
+        def let_eli_work():
+            selected=[key for key,widget in style_checks.items()
+                      if widget.isChecked()]
+            chosen=None
+            if not automatic.isChecked():
+                chosen=[
+                    int(boundaries.item(i).data(Qt.UserRole))
+                    for i in range(boundaries.count())
+                    if boundaries.item(i).checkState()==Qt.Checked]
+            try:
+                revised,report=plan_montage_transitions(
+                    self.clips,selected,slider.value()/100.,
+                    manual_boundaries=chosen,fade_ending=ending.isChecked())
+            except ValueError as exc:
+                status.setText('Cannot apply: '+str(exc))
+                QMessageBox.warning(dlg,'Eli — Transition Review',str(exc))
+                return
+            self.clips=revised
+            self.update_all()
+            summary=(
+                f'Eli inspected {len(report)} scene boundaries. '
+                f'Updated {sum(x["applied_now"] for x in report)} cuts. '
+                f'Duration target: {slider.value()/100.:.2f}s. '
+                f'Styles: {"selected" if selected else "randomized"}. '
+                'Click Rendered Preview to see the real transitions.\n'
+                + '\n'.join(
+                    f'At {tc(entry["output_seconds"])}: {entry["style"]} '
+                    f'({entry["duration"]:.2f}s)'
+                    for entry in report))
+            status.setText(summary)
+            self.note.setText(
+                f'Eli applied {sum(x["applied_now"] for x in report)} '
+                'timeline transitions. Render a preview to inspect them.')
+        apply_btn.clicked.connect(lambda checked=False:let_eli_work())
+        dlg.exec()
 
     def save_project(self,save_as=False):
         path=self.project_path if not save_as else None

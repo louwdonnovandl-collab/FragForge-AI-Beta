@@ -7,6 +7,7 @@ import json
 import tempfile
 import functools
 from pathlib import Path
+from eli_transition_palette import TRANSITION_STYLES
 
 
 def binary(name):
@@ -84,6 +85,11 @@ def eli_transition_profile(previous, following):
                         -float(following.get('speed',1.)))<=.0001)
     if continuous:
         return {'kind':'join','overlap':0.,'preroll':0.,'freeze_pad':0.}
+    mode=str(following.get('transition','fade')).lower()
+    if mode=='cut':
+        return {'kind':'cut','overlap':0.,'preroll':0.,'freeze_pad':0.}
+    if mode not in TRANSITION_STYLES:
+        raise ValueError('Unsupported Eli transition: '+mode)
     if requested<.05:
         raise ValueError('Separate Eli scenes require an opacity crossfade.')
     # A clip cannot support a full fade at both boundaries if it is
@@ -123,7 +129,9 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
     eli_montage = (
         len(primary) > 1 and eli_end_fade
         and all('crossfade_seconds' in c for c in primary)
-        and all(str(c.get('transition', 'fade')).lower() == 'fade' for c in primary[1:])
+        and all(str(c.get('transition', 'fade')).lower() in TRANSITION_STYLES
+                or str(c.get('transition', 'fade')).lower()=='cut'
+                for c in primary[1:])
         and abs(float(primary[0]['at'])) < .04
         and all(abs(float(b['at']) - float(a['at']) - clip_seconds(a)) < .04
                 for a, b in zip(primary, primary[1:]))
@@ -217,15 +225,15 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
         elapsed = clip_seconds(primary[0])
         for k, (i, c) in enumerate(primary_pairs[1:], 1):
             overlap = float(c['_eli_overlap'])
-            if c.get('_eli_transition_kind')=='join':
-                # These source frames are truly adjacent: no dissolve is needed.
-                # A hard cut between separate shots is never silently allowed.
+            if c.get('_eli_transition_kind') in ('join','cut'):
+                # Same-source continuous footage is a join. A cut is allowed
+                # ONLY if a user explicitly left that boundary unselected.
                 parts.append(
                     f'[{label}][eli_src_{i}]concat=n=2:v=1:a=0[eli_merge_{k}]')
             else:
                 parts.append(
                     f'[{label}][eli_src_{i}]'
-                    f'xfade=transition=fade:duration={overlap:.6f}:'
+                    f'xfade=transition={c["transition"]}:duration={overlap:.6f}:'
                     f'offset={max(0., elapsed - overlap):.6f}[eli_merge_{k}]')
             label = f'eli_merge_{k}'
             elapsed += clip_seconds(c)
@@ -294,7 +302,7 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
         expected_merges=sum(
             following.get('_eli_transition_kind')=='blend'
             for following in primary[1:])
-        actual_merges = sum('xfade=transition=fade:' in stage for stage in parts)
+        actual_merges = sum('xfade=transition=' in stage for stage in parts)
         if actual_merges != expected_merges:
             raise RuntimeError(
                 f'Eli expected {expected_merges} direct opacity crossfades '
