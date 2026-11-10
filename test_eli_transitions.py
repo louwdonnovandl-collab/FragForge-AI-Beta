@@ -179,3 +179,11 @@ except ValueError as exc:
 else:
     raise AssertionError('Overlong transition silently shortened')
 print('PASS: ten export-backed transition options, auto/random and manual cuts')
+
+# Regression: selecting no ending fade must not disable xfade rendering.
+# Actual FFmpeg clip export is covered by check(); this guards the
+# metadata-to-filtergraph gate that previously required eli_end_fade=True.
+media_text=Path(__file__).with_name('media.py').read_text(encoding='utf-8')
+assert "len(primary) > 1 and eli_requested" in media_text
+assert "last['eli_end_fade'] if 'eli_end_fade' in last" in media_text
+print('PASS: explicit optional end fade does not disable scene transitions')

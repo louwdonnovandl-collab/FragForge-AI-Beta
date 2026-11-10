@@ -119,15 +119,16 @@ def export_layers(clips, destination, encoder='auto', quality='balanced', progre
     primary = [c for _, c in primary_pairs]
     eli_requested = any('crossfade_seconds' in c or c.get('eli_end_fade')
                         or c.get('eli_auto_montage') for c in primary)
-    # Saved Eli montages from v1.0.6+ may omit the explicit final flag.
-    # Any Eli-generated montage still gets the standard last-second fade.
-    eli_end_fade = bool(primary and (
-        primary[-1].get('eli_end_fade') or primary[-1].get('eli_auto_montage')
-        or 'crossfade_seconds' in primary[-1]))
+    # Respect a user-selected ending. Explicit False means no final fade,
+    # while older saved montages without this field keep the legacy default.
+    last=primary[-1] if primary else {}
+    eli_end_fade = bool(
+        last['eli_end_fade'] if 'eli_end_fade' in last
+        else (last.get('eli_auto_montage') or 'crossfade_seconds' in last))
     def clip_seconds(c):
         return (float(c['end']) - float(c['start'])) / max(.01, float(c.get('speed', 1.)))
     eli_montage = (
-        len(primary) > 1 and eli_end_fade
+        len(primary) > 1 and eli_requested
         and all('crossfade_seconds' in c for c in primary)
         and all(str(c.get('transition', 'fade')).lower() in TRANSITION_STYLES
                 or str(c.get('transition', 'fade')).lower()=='cut'
