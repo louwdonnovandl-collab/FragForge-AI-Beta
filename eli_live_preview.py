@@ -84,23 +84,28 @@ def _ffmpeg_command(w):
     width=PREVIEW_WIDTH;height=PREVIEW_HEIGHT;fps=PREVIEW_FPS
     video=(f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
            f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
-           f'fps={fps},format=yuv420p,')
-    freeze=f'tpad=start_mode=clone:start_duration={pad:.6f},' if pad>.001 else ''
+           f'fps={fps},format=yuv420p')
+    freeze=(f'tpad=start_mode=clone:start_duration={pad:.6f},'
+            if pad>.001 else '')
+    # The short inputs are already limited by -ss/-t. Adding trim and
+    # settb=AVTB here caused FFmpeg to report "rate 1/0 is invalid" for
+    # xfade on Windows/Linux. Keep explicit CFR via fps=30 and no pre-xfade
+    # trim; export continues using its own (already working) graph.
     graph=(
-        f'[0:v]trim=duration={d*rate_a:.6f},'
-        f'setpts=(PTS-STARTPTS)/{rate_a:.6f},{video}'
-        f'settb=AVTB,setpts=PTS-STARTPTS[a];'
-        f'[1:v]trim=duration={max(.10,preroll*rate_b):.6f},'
-        f'setpts=(PTS-STARTPTS)/{rate_b:.6f},{video}{freeze}'
-        f'settb=AVTB,setpts=PTS-STARTPTS[b];'
+        f'[0:v]setpts=(PTS-STARTPTS)/{rate_a:.6f},{video}[a];'
+        f'[1:v]setpts=(PTS-STARTPTS)/{rate_b:.6f},{video},'
+        f'{freeze}format=yuv420p[b];'
         f'[a][b]xfade=transition={w["style"]}:duration={d:.6f}:offset=0,'
-        f'format=rgb24,fps={fps},trim=duration={d:.6f}[out]')
+        f'format=rgb24,fps={fps}[out]')
+    # Request slightly more decoded footage than the transition length to
+    # survive seek rounding and sparse keyframes.
     return [
         binary('ffmpeg'),'-hide_banner','-nostdin','-loglevel','error',
-        '-ss',f'{w["source_a"]:.6f}','-t',f'{d*rate_a+.20:.6f}',
+        '-ss',f'{w["source_a"]:.6f}',
+        '-t',f'{max(.40,d*rate_a+.25):.6f}',
         '-i',str(w['before']['path']),
         '-ss',f'{w["source_start"]:.6f}',
-        '-t',f'{max(.25,preroll*rate_b+.20):.6f}',
+        '-t',f'{max(.40,preroll*rate_b+.25):.6f}',
         '-i',str(w['clip']['path']),
         '-filter_complex',graph,'-map','[out]','-frames:v',
         str(max(2,int(math.ceil(d*fps)))),'-an',
