@@ -262,7 +262,8 @@ assert fade and abs(fade['alpha']-.5)<.001,fade
 assert abs(fade['source_start']-99.5)<.001,fade
 assert incoming_fade([first,second],3.)['alpha']==0.  # preloading, no visible blend yet
 assert incoming_fade([first,second],1.49) is None  # outside 2s prefetch window
-assert incoming_fade([first,second],4.1) is None
+assert incoming_fade([first,second],4.1) is not None  # bridge protects delayed source seek
+assert incoming_fade([first,second],5.6) is None  # bridge ends after up to 1.5s
 same=dict(second,start=14.,end=18.,eli_force_transition=False)
 assert incoming_fade([first,same],3.75) is None
 assert abs(ending_fade_gain([first,second],7.5)-.5)<.001
