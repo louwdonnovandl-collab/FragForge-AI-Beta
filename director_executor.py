@@ -287,3 +287,48 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
     if abs(runtime(selected)-budget)>max(.15,min(1.,budget*.005)):
         return [],[]
     return [],selected
+
+
+def prioritize_action_opening(segments, markers, max_lead_seconds=3.):
+    """Move a selected combat candidate to the opening without losing footage.
+
+    This is a *timeline* reorder, never a claim that combat was verified.
+    Existing source coverage, clip rates and total playback duration are
+    preserved. A long lead-in is split about two seconds before the sampled
+    candidate, placing the displaced lead-in later in the montage.
+    """
+    original=[(float(a),float(b),float(rate)) for a,b,rate in segments]
+    maximum=max(.25,float(max_lead_seconds))
+    if not original:return original,None
+    candidates=[]
+    for idx,(a,b,rate) in enumerate(original):
+        if b<=a or rate<=0:continue
+        for marker in markers:
+            t=float(marker)
+            if a<=t<=b:
+                lead=(t-a)/rate
+                after=(b-t)/rate
+                # Prefer an intact scene whose action occurs near its start;
+                # otherwise choose a fight with enough subsequent context.
+                candidates.append((
+                    int(lead>maximum+.001),int(after<6.),idx,t))
+    if not candidates:return original,None
+    _,_,idx,t=min(candidates)
+    a,b,rate=original[idx]
+    existing_lead=(t-a)/rate
+    if idx==0 and existing_lead<=maximum+.001:
+        return original,existing_lead
+    pre_roll=min(2.,max(.25,maximum-.25))
+    anchor=a if existing_lead<=maximum else max(a,t-pre_roll*rate)
+    combat_clip=(anchor,b,rate)
+    others=original[:idx]+original[idx+1:]
+    if anchor>a+.05:
+        # The lead-in is still usable supporting footage, but not an intro.
+        others.append((a,anchor,rate))
+    arranged=[combat_clip]+others
+    if abs(runtime(arranged)-runtime(original))>.001:
+        raise ValueError('Action-first reordering changed montage duration')
+    first_output=(t-anchor)/rate
+    if first_output>maximum+.001:
+        raise ValueError('Action-first opening exceeds requested lead-in')
+    return arranged,first_output
