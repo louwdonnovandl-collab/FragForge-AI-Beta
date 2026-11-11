@@ -41,6 +41,12 @@ with tempfile.TemporaryDirectory(prefix='eli_v1_fade_') as directory:
     assert first[0]>first[2]*2,(first,middle,last)
     assert 40<middle[0]<220 and 40<middle[2]<220,(first,middle,last)
     assert last[2]>last[0]*2,(first,middle,last)
+    # Post-cut bridge must contain actual incoming (blue) frames, not a
+    # single stale original source frame when the Qt player starts a new trim.
+    assert count >= int((window['seconds']+window['postroll'])*30)-1,(count,window)
+    assert all(rgb(i)[2]>rgb(i)[0]*2 for i in range(17,count)),[(i,rgb(i)) for i in range(17,count)]
+    assert incoming_fade([a,b],1.12,preload=0.) is not None
+    assert incoming_fade([a,b],2.0,preload=0.) is None
     print('PASS: Live V1 fade renders real red/blue composite frames:',
           'first',first,'middle',middle,'last',last,'frames',count)
     for style in ('dissolve','wipeleft','radial','pixelize'):
