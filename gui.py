@@ -1863,6 +1863,7 @@ class Editor(QMainWindow):
                         state['segments'],confirmed,maximum)
                     state['segments']=rearranged
                     windows=[(a,b) for a,b,_ in rearranged]
+                    state['windows']=windows
                 else:
                     first_match=None
                 state['first_combat_output_seconds']=(
