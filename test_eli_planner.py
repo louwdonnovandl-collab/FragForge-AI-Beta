@@ -251,3 +251,20 @@ assert sum(length>=7. for length in clip_lengths)>=3,clip_lengths
 assert len(natural)<=10,clip_lengths
 assert any(a<=51.5<=b for a,b,rate in natural),natural
 print('PASS: 60s highlight montage preserves variable 7.5–11s gameplay scenes')
+
+# Live V1 transition regression
+from eli_live_preview import incoming_fade, ending_fade_gain
+v1={'path':'example.mp4','kind':'video','track':'V1','speed':1.,'transition':'fade','crossfade_seconds':.5}
+first=dict(v1,start=10.,end=14.,at=0.)
+second=dict(v1,start=100.,end=104.,at=4.,eli_force_transition=True,eli_end_fade=True)
+fade=incoming_fade([first,second],3.75)
+assert fade and abs(fade['alpha']-.5)<.001,fade
+assert abs(fade['source_start']-99.5)<.001,fade
+assert incoming_fade([first,second],3.) is None
+assert incoming_fade([first,second],4.1) is None
+same=dict(second,start=14.,end=18.,eli_force_transition=False)
+assert incoming_fade([first,same],3.75) is None
+assert abs(ending_fade_gain([first,second],7.5)-.5)<.001
+assert ending_fade_gain([first,second],5.)==1.
+assert ending_fade_gain([first,dict(second,eli_end_fade=False)],7.5)==1.
+print('PASS: live V1 fade timing, no false joins, and final fade')
