@@ -129,7 +129,8 @@ def chat_reply(message, model=DEFAULT_MODEL, history=None):
                  if requested.get('combat_first') else '')
         extras=[]
         extras.append('combat only' if requested.get('combat_only') else
-                      'combat first, then worthwhile supporting scenes'
+                      ('combat opening requested; supporting gameplay allowed' if requested.get('combat_first')
+                       else 'combat prioritized throughout; supporting gameplay allowed')
                       if requested.get('focus_kills') else 'general gameplay')
         if requested.get('explicit_crossfade'):
             extras.append(
