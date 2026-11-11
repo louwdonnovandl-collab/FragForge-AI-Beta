@@ -24,7 +24,7 @@ def _seconds(c):
     return (float(c['end'])-float(c['start']))/max(.01,float(c.get('speed',1.)))
 
 
-def incoming_fade(clips, t, preload=2.):
+def incoming_fade(clips, t, preload=2., include_postroll=True):
     """Return export-matched transition details around an edited V1 boundary."""
     from media import eli_transition_profile
     t=float(t)
@@ -40,7 +40,7 @@ def incoming_fade(clips, t, preload=2.):
         # Don't reach the next clip's transition in short neighboring clips.
         tail=max(0.,min(POSTROLL_SECONDS,_seconds(after)-seconds-1./PREVIEW_FPS))
         if (seconds<.05 or style=='cut' or
-                not boundary-seconds-max(0.,float(preload))<=t<boundary+tail):
+                not boundary-seconds-max(0.,float(preload))<=t<boundary+(tail if include_postroll else 0.)):
             continue
         if abs(float(before['at'])+_seconds(before)-boundary)>.05:
             continue
@@ -194,7 +194,10 @@ class LiveFadeController:
     def update(self,seconds,playing=False):
         # Preload the *complete composited* transition, including wipes and
         # dissolves, well before the playhead reaches it.
-        ahead=incoming_fade(self.editor.clips,seconds,preload=PREFETCH_SECONDS)
+        # Ignore the previous transition's postroll while searching ahead;
+        # otherwise short V1 clips can delay prefetch of the NEXT cut.
+        ahead=incoming_fade(self.editor.clips,seconds,
+                            preload=PREFETCH_SECONDS,include_postroll=False)
         if ahead is not None:self._request(ahead)
         actual=incoming_fade(self.editor.clips,seconds,preload=0.)
         if actual is None:
