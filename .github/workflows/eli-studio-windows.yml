@@ -1,4 +1,4 @@
-name: Build Eli Studio v1.0.29 — V1 Real Transition Preview and Combat Priority
+name: Build Eli Studio v1.0.30 — V1 Transition Flash Fix
 on:
   workflow_dispatch:
 permissions:
@@ -41,8 +41,8 @@ jobs:
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name EliStudio --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all PySide6 --add-data "assets;assets" --add-data "effects_assets;effects_assets" --add-data "music_library;music_library" launcher.py
       - name: Archive Windows app
         shell: pwsh
-        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.29.zip
+        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.30.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Eli_Studio_v1.0.29
-          path: Eli_Studio_v1.0.29.zip
+          name: Eli_Studio_v1.0.30
+          path: Eli_Studio_v1.0.30.zip
