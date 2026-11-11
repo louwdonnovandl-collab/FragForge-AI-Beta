@@ -1,4 +1,4 @@
-name: Build Eli Studio v1.0.2 — Major Bug Fix
+name: Build Eli Studio v1.0.24 — Combat Apply Fix
 on:
   workflow_dispatch:
 permissions:
@@ -27,15 +27,16 @@ jobs:
       - name: Verify Python source syntax
         shell: pwsh
         run: |
-          python -m py_compile launcher.py gui.py media.py version.py local_director.py
+          python -m py_compile launcher.py gui.py media.py version.py local_director.py director_executor.py longform_scene_planner.py
+          python test_eli_planner.py
       - name: Package Eli Studio
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name EliStudio --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all PySide6 --add-data "assets;assets" --add-data "effects_assets;effects_assets" --add-data "music_library;music_library" launcher.py
       - name: Archive Windows app
         shell: pwsh
-        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.2.zip
+        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.24.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Eli_Studio_v1.0.2
-          path: Eli_Studio_v1.0.2.zip
+          name: Eli_Studio_v1.0.24
+          path: Eli_Studio_v1.0.24.zip
