@@ -29,6 +29,17 @@ def _safe(t,motion,audio,actions):
             and all(not a-5.<=t<=b+5. for a,b,_ in actions))
 
 
+def _low_marker_gap(t,motion,audio,actions):
+    """A possible quiet edit seam, not a verified scene boundary.
+
+    Require breathing room from both sudden visual changes and audio, and
+    never place a cut inside or close to an estimated gameplay action.
+    """
+    return (all(abs(t-x)>=5.5 for x in motion)
+            and all(abs(t-x)>=3.5 for x in audio)
+            and all(not a-6.<=t<=b+6. for a,b,_ in actions))
+
+
 def _quiet_seam(left,right,source_start,source_end,motion,audio,actions):
     """Select a low-motion seam without mistaking nearby noisy peaks for action.
 
@@ -76,10 +87,17 @@ def _build_blocks(segments,peaks,quiet,audio_events,action_windows):
                     candidates[round(t,2)]='quiet'
         timeline=sorted(set(t for t in times+sounds if start<t<end))
         for a,b in zip([start]+timeline,timeline+[end]):
-            if b-a<42.:continue
+            # Previous 42s threshold could leave a 4-minute scene intact
+            # despite multiple clean 12-20s gaps between recorded markers.
+            # Candidate seams are still at low-evidence centers, and edits
+            # near visually estimated action remain forbidden.
+            if b-a<12.:continue
             t=(a+b)/2.
-            if start+18.<t<end-18. and _safe(t,times,sounds,action):
+            if not (start+18.<t<end-18.):continue
+            if b-a>=42. and _safe(t,times,sounds,action):
                 candidates.setdefault(round(t,2),'activity gap')
+            elif b-a>=12. and _low_marker_gap(t,times,sounds,action):
+                candidates.setdefault(round(t,2),'low-marker gap')
         # Target a 60-90s scene, but never fabricate a cut when no safe seam
         # exists. This may leave long unbroken scenes in the plan.
         cuts=[start]
@@ -148,27 +166,48 @@ def plan_longform(segments,target_seconds,activity_peaks=(),quiet=(),
     tolerance=0.025 if not explicit_speed else 0.0001
     upper=target*(1+tolerance)
     max_bucket=int(math.ceil(upper))+2
-    states={0:(0.,0.,())}
-    for index,(a,b,score,events,motions,audios) in enumerate(blocks):
-        length=(b-a)/rate
-        units=max(1,int(round(length)))
-        if units>max_bucket:continue
-        next_states=dict(states)
-        for bucket,(utility,seconds,chosen) in states.items():
-            new_bucket=bucket+units
-            if new_bucket>max_bucket:continue
-            candidate=(utility+score,seconds+length,chosen+(index,))
-            previous=next_states.get(new_bucket)
-            if previous is None or candidate[0]>previous[0]:
-                next_states[new_bucket]=candidate
-        states=next_states
-    choices=[]
-    for utility,seconds,ids in states.values():
-        if not ids or not abs(seconds-target)<=target*tolerance:
-            continue
-        # Activity matters, but excessive cuts are undesirable for long-form.
-        desirability=utility-8.*len(ids)-18.*abs(seconds-target)
-        choices.append((desirability,-abs(seconds-target),ids,seconds))
+    # Avoid tiny disconnected scene islands in ten-minute edits.
+    # Allow short segments only where the vision scanner has action evidence,
+    # or as a last resort if an otherwise valid target cannot be reached.
+    minimum_scene_seconds=15. if target>=300. else 0.
+    excluded=[i for i,(a,b,score,events,motions,audios) in enumerate(blocks)
+              if (b-a)/rate<minimum_scene_seconds and events==0]
+    report['short_islands_disfavored']=len(excluded)
+    report['short_islands_used_as_fallback']=False
+
+    def optimize(allow_short=False):
+        states={0:(0.,0.,())}
+        for index,(a,b,score,events,motions,audios) in enumerate(blocks):
+            if not allow_short and index in excluded:continue
+            length=(b-a)/rate
+            units=max(1,int(round(length)))
+            if units>max_bucket:continue
+            next_states=dict(states)
+            for bucket,(utility,seconds,chosen) in states.items():
+                new_bucket=bucket+units
+                if new_bucket>max_bucket:continue
+                candidate=(utility+score,seconds+length,chosen+(index,))
+                previous=next_states.get(new_bucket)
+                if previous is None or candidate[0]>previous[0]:
+                    next_states[new_bucket]=candidate
+            states=next_states
+        choices=[]
+        for utility,seconds,ids in states.values():
+            if not ids or not abs(seconds-target)<=target*tolerance:
+                continue
+            # Penalize noisy short clips and excessive scene switching.
+            short_penalty=sum(
+                140. for i in ids if i in excluded)
+            desirability=(utility-8.*len(ids)-18.*abs(seconds-target)
+                          -short_penalty)
+            choices.append((desirability,-abs(seconds-target),ids,seconds))
+        return choices
+
+    excluded=set(excluded)
+    choices=optimize()
+    if not choices and excluded:
+        choices=optimize(allow_short=True)
+        report['short_islands_used_as_fallback']=bool(choices)
     if not choices:
         report['warning']=(
             'Cannot reach this duration using complete scene blocks without '
@@ -203,6 +242,7 @@ def plan_longform(segments,target_seconds,activity_peaks=(),quiet=(),
         else:joined.append((a,b,rate_value))
     report['selected_blocks']=len(selected)
     report['selected_clips']=len(joined)
+    report['longest_scene_seconds']=round(max((b-a)/rate for a,b,rate in joined),1) if joined else 0.
     report['rate']=round(proposed_rate,6)
     report['retime_percent']=round(100.*(proposed_rate/rate-1.),3)
     report['retained_motion']=sum(
@@ -216,6 +256,11 @@ def plan_longform(segments,target_seconds,activity_peaks=(),quiet=(),
         {'source_seconds':round(t,2),'type':why}
         for t,why in cutpoints
         if any(abs(t-a)<.08 or abs(t-b)<.08 for a,b,_ in joined)]
+    if report['short_islands_used_as_fallback']:
+        report['warning']='Exact duration required a short isolated scene; review that cut before applying.'
+    if report['longest_scene_seconds']>150.:
+        note='One retained scene exceeds 150 seconds because no sufficiently quiet cut was found.'
+        report['warning']=(report['warning']+' '+note).strip()
     if abs(duration(joined)-target)>.12:
         report['warning']='Internal runtime validation failed.'
         return [],report
