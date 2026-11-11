@@ -15,6 +15,9 @@ PREVIEW_FPS=30
 PREVIEW_WIDTH=640
 PREVIEW_HEIGHT=360
 PREFETCH_SECONDS=9.
+# Continue drawing correctly decoded incoming frames while the main Qt player
+# seeks across a same-file trim. This prevents its stale frame from flashing.
+POSTROLL_SECONDS=1.5
 
 
 def _seconds(c):
@@ -32,8 +35,12 @@ def incoming_fade(clips, t, preload=2.):
         boundary=float(after['at'])
         seconds=float(after.get('crossfade_seconds',0.))
         style=str(after.get('transition','cut')).lower()
+        # Keep the precomposited picture on screen *after* the cut until
+        # the main QMediaPlayer has caught up with the new source timestamp.
+        # Don't reach the next clip's transition in short neighboring clips.
+        tail=max(0.,min(POSTROLL_SECONDS,_seconds(after)-seconds-1./PREVIEW_FPS))
         if (seconds<.05 or style=='cut' or
-                not boundary-seconds-max(0.,float(preload))<=t<boundary):
+                not boundary-seconds-max(0.,float(preload))<=t<boundary+tail):
             continue
         if abs(float(before['at'])+_seconds(before)-boundary)>.05:
             continue
@@ -44,7 +51,7 @@ def incoming_fade(clips, t, preload=2.):
         preroll=float(policy['preroll'])
         return {
             'before':before,'clip':after,'boundary':boundary,
-            'seconds':seconds,'style':style,
+            'seconds':seconds,'style':style,'postroll':tail,
             'rate_a':rate_a,'rate':rate_b,'preroll':preroll,
             'freeze_pad':float(policy['freeze_pad']),
             'source_a':max(0.,float(before['end'])-seconds*rate_a),
@@ -72,7 +79,7 @@ def _key(w):
         round(w['source_a'],4),round(w['rate_a'],5),
         os.path.normcase(os.path.abspath(str(after['path']))),
         round(w['source_start'],4),round(w['rate'],5),
-        w['style'],round(w['seconds'],4),
+        w['style'],round(w['seconds'],4),round(w['postroll'],4),
         round(w['freeze_pad'],4))
 
 
@@ -80,7 +87,7 @@ def _ffmpeg_command(w):
     """Produce a few FFmpeg xfade frames, not a rendered video file."""
     from media import binary
     d=w['seconds'];rate_a=w['rate_a'];rate_b=w['rate']
-    preroll=w['preroll'];pad=w['freeze_pad']
+    preroll=w['preroll'];pad=w['freeze_pad'];tail=w['postroll']
     width=PREVIEW_WIDTH;height=PREVIEW_HEIGHT;fps=PREVIEW_FPS
     video=(f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
            f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
@@ -105,10 +112,10 @@ def _ffmpeg_command(w):
         '-t',f'{max(.40,d*rate_a+.25):.6f}',
         '-i',str(w['before']['path']),
         '-ss',f'{w["source_start"]:.6f}',
-        '-t',f'{max(.40,preroll*rate_b+.25):.6f}',
+        '-t',f'{max(.40,(preroll+tail)*rate_b+.25):.6f}',
         '-i',str(w['clip']['path']),
         '-filter_complex',graph,'-map','[out]','-frames:v',
-        str(max(2,int(math.ceil(d*fps)))),'-an',
+        str(max(2,int(math.ceil((d+tail)*fps)))),'-an',
         '-f','rawvideo','-pix_fmt','rgb24','pipe:1']
 
 
@@ -132,7 +139,7 @@ class FadeFrameWorker(QThread):
             width,height=PREVIEW_WIDTH,PREVIEW_HEIGHT
             frame_bytes=width*height*3
             frames=[]
-            for i in range(min(int(math.ceil(self.window['seconds']*PREVIEW_FPS)),
+            for i in range(min(int(math.ceil((self.window['seconds']+self.window['postroll'])*PREVIEW_FPS)),
                                len(result.stdout)//frame_bytes)):
                 data=result.stdout[i*frame_bytes:(i+1)*frame_bytes]
                 frames.append(QImage(data,width,height,width*3,QImage.Format_RGB888).copy())
@@ -201,6 +208,8 @@ class LiveFadeController:
             return
         elapsed=max(0.,float(seconds)-(actual['boundary']-actual['seconds']))
         pos=min(len(frames)-1,int(elapsed*PREVIEW_FPS))
-        # Precomposited image already includes BOTH clips, so draw it at 100%.
+        # The additional postroll frames mask stale QMediaPlayer seek images.
+        # The first half-second is the actual xfade; the remainder is the
+        # correctly decoded incoming source until the Qt handoff is ready.
         self.overlay.fade_image=frames[max(0,pos)]
         self.overlay.set_fade_alpha(1.)
