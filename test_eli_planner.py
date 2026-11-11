@@ -268,3 +268,13 @@ assert abs(ending_fade_gain([first,second],7.5)-.5)<.001
 assert ending_fade_gain([first,second],5.)==1.
 assert ending_fade_gain([first,dict(second,eli_end_fade=False)],7.5)==1.
 print('PASS: live V1 fade timing, no false joins, and final fade')
+
+# v1.0.28: incoming V1 prefetch must start before the fade, not after it.
+early=incoming_fade([first,second],-5.5,preload=10.)
+assert early and early['alpha']==0.,early
+assert incoming_fade([first,second],-8.,preload=10.) is None
+assert 'class FadeFrameWorker(QThread):' in Path(__file__).with_name(
+    'eli_live_preview.py').read_text(encoding='utf-8')
+# V1 direct playback and transition rendering must be independent of Export.
+assert "self.live_fades.update(self.playhead,True)" in gui_preview_source if 'gui_preview_source' in globals() else "self.live_fades.update(self.playhead,True)" in Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+print('PASS: V1 crossfade prefetch begins ahead of scene boundary')
