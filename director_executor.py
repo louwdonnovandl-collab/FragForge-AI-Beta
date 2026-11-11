@@ -190,14 +190,24 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
                 groups.append([(t,score)])
         for group in groups:
             first,last=group[0][0],group[-1][0]
-            x=max(a,first-2.5*speed)
-            y=min(b,last+2.*speed)
-            # Long sequences remain variable-length; cap at 20 output seconds
-            # to preserve variety in short montages.
+            strength=max(score for _,score in group)
+            # The old 2.5s lead + 2s tail created a fixed 4.5-second
+            # clip around nearly every isolated motion peak. Keep context
+            # and let measured activity strength determine how much.
+            if strength>=14.:
+                pre,post=4.5,6.5
+            elif strength>=8.:
+                pre,post=3.5,5.5
+            else:
+                pre,post=3.,4.5
+            x=max(a,first-pre*speed)
+            y=min(b,last+post*speed)
+            # Longer runs can be genuine gameplay sequences; do not chop
+            # every peak into the same small video fragment.
             if y-x>20.*speed:
                 y=x+20.*speed
             if y-x>.3:
-                candidates.append((x,y,max(score for _,score in group)))
+                candidates.append((x,y,strength))
     candidates.sort(key=lambda item:(item[0],item[1]))
     merged=[]
     for a,b,score in candidates:
@@ -242,8 +252,11 @@ def precision_montage(segments, peaks, target_seconds, speed=1.0, intro_seconds=
         chunks=[]
         for a,b,_ in filler:
             a=max(a,earliest)
+            # Prefer sustained supporting scenes instead of a grid of
+            # artificial five-second slices. Only the final scene may be
+            # shortened to satisfy the user's exact requested runtime.
             while b-a>.03:
-                end=min(b,a+5.*speed)
+                end=min(b,a+12.*speed)
                 proximity=min((max(u-end,a-v,0.) for u,v,_ in selected),
                               default=0.)
                 chunks.append((proximity,a,end))
