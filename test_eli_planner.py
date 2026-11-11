@@ -260,7 +260,8 @@ second=dict(v1,start=100.,end=104.,at=4.,eli_force_transition=True,eli_end_fade=
 fade=incoming_fade([first,second],3.75)
 assert fade and abs(fade['alpha']-.5)<.001,fade
 assert abs(fade['source_start']-99.5)<.001,fade
-assert incoming_fade([first,second],3.) is None
+assert incoming_fade([first,second],3.)['alpha']==0.  # preloading, no visible blend yet
+assert incoming_fade([first,second],1.49) is None  # outside 2s prefetch window
 assert incoming_fade([first,second],4.1) is None
 same=dict(second,start=14.,end=18.,eli_force_transition=False)
 assert incoming_fade([first,same],3.75) is None
