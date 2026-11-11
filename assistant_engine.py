@@ -63,11 +63,24 @@ def interpret_request(text):
     music = not no_music and not no_sounds and bool(re.search(r'\b(?:add|insert|include|use|play|select|choose|put|with|background)\b[^.!?\n]{0,60}\b(?:music|songs?|soundtrack|background track)\b|\b(?:music|song|soundtrack)\s*:',t))
     # "Prioritize combat" is a ranking instruction, not "combat only".
     # Only an EXPLICIT exclusive instruction may reject supporting gameplay.
-    combat_only=bool(re.search(
+    exclusive_request=bool(re.search(
         r'\b(?:only|exclusively|just|nothing but)\s+(?:actual\s+)?'
         r'(?:combat|fighting|fights?|kills?|zombie attacks?)\b'
         r'|\b(?:combat|fighting|fights?|kills?)\s+only\b'
         r'|\b(?:no|without)\s+(?:any\s+)?(?:noncombat|filler|supporting footage)\b',t))
+    # A negated mention of "combat only" is NOT an exclusive editing request.
+    # Example: "Prioritize does not mean combat only. Include normal gameplay".
+    denied_exclusivity=bool(re.search(
+        r'\b(?:not|never|isn.t|doesn.t|does\s+not|do\s+not|is\s+not)\s+'
+        r'(?:(?:\w+)[\s-]+){0,5}'
+        r'(?:combat[\s-]+only|only\s+combat|exclusively\s+combat)\b',t))
+    supports_other_gameplay=bool(re.search(
+        r'\b(?:include|allow|add|use|mix\s+in)\s+'
+        r'(?:\w+\s+){0,4}'
+        r'(?:normal|general|noncombat|supporting|other)\s+'
+        r'(?:\w+\s+){0,3}(?:gameplay|footage|scenes|clips)\b',t))
+    combat_only=exclusive_request and not (
+        denied_exclusivity or supports_other_gameplay)
     priority_combat=bool(focus_kills and re.search(
         r'\b(?:prioriti[sz]e|focus|first|start with|lead with|mostly)\b',t))
     transitions_explicit=bool(re.search(
