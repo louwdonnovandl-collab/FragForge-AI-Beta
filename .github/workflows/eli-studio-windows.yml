@@ -1,4 +1,4 @@
-name: Build Eli Studio v1.0.28 — Live V1 Fades and Long-form Cuts
+name: Build Eli Studio v1.0.29 — V1 Real Transition Preview and Combat Priority
 on:
   workflow_dispatch:
 permissions:
@@ -29,14 +29,20 @@ jobs:
         run: |
           python -m py_compile launcher.py gui.py media.py version.py local_director.py director_executor.py longform_scene_planner.py eli_live_preview.py
           python test_eli_planner.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test real V1 transition frames
+        shell: pwsh
+        run: |
+          python test_eli_live_preview.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package Eli Studio
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name EliStudio --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all PySide6 --add-data "assets;assets" --add-data "effects_assets;effects_assets" --add-data "music_library;music_library" launcher.py
       - name: Archive Windows app
         shell: pwsh
-        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.28.zip
+        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.29.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Eli_Studio_v1.0.28
-          path: Eli_Studio_v1.0.28.zip
+          name: Eli_Studio_v1.0.29
+          path: Eli_Studio_v1.0.29.zip
