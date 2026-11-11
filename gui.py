@@ -8,6 +8,7 @@ from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QMediaDevices,QSoundE
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from media import probe, export_layers, nvenc_available, binary
 from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
+from eli_live_preview import LiveFadeController, ending_fade_gain
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
@@ -42,6 +43,8 @@ class LiveOverlay(QWidget):
         self._drag_start=None
         self.cache={}
         self.frame_image=QImage()
+        self.fade_image=QImage()
+        self.fade_alpha=0.
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
     def mousePressEvent(self,event):
@@ -72,6 +75,19 @@ class LiveOverlay(QWidget):
         self.frame_image=frame.toImage().copy() if frame.isValid() else QImage()
         self.update()
 
+    def receive_fade_frame(self, frame):
+        self.fade_image=frame.toImage().copy() if frame.isValid() else QImage()
+        self.update()
+
+    def set_fade_alpha(self, alpha):
+        self.fade_alpha=max(0.,min(1.,float(alpha)))
+        self.update()
+
+    def clear_fade_frame(self):
+        self.fade_image=QImage()
+        self.fade_alpha=0.
+        self.update()
+
     def paintEvent(self, event):
         painter=QPainter(self)
         painter.fillRect(self.rect(), QColor('black'))
@@ -82,6 +98,14 @@ class LiveOverlay(QWidget):
                 scale=min(self.width()/iw,self.height()/ih)
                 w=iw*scale; h=ih*scale
                 painter.drawImage(QRectF((self.width()-w)/2,(self.height()-h)/2,w,h),self.frame_image,QRectF(self.frame_image.rect()))
+        if self.fade_alpha>0. and not self.fade_image.isNull():
+            iw=self.fade_image.width();ih=self.fade_image.height()
+            if iw and ih:
+                scale=min(self.width()/iw,self.height()/ih)
+                w=iw*scale;h=ih*scale
+                painter.setOpacity(self.fade_alpha)
+                painter.drawImage(QRectF((self.width()-w)/2,(self.height()-h)/2,w,h),self.fade_image,QRectF(self.fade_image.rect()))
+                painter.setOpacity(1.)
         t=self.editor.playhead
         for c in self.editor.clips:
             if c.get('kind')!='effect' or not c.get('track','').startswith('V'):
@@ -111,6 +135,9 @@ class LiveOverlay(QWidget):
             painter.rotate(float(c.get('overlay_rotation',0.)))
             painter.drawPixmap(QRectF(-w/2,-h/2,w,h),pix,QRectF(pix.rect()))
             painter.restore()
+        end_gain=ending_fade_gain(self.editor.clips,t)
+        if end_gain<1.:
+            painter.fillRect(self.rect(),QColor(0,0,0,round((1.-end_gain)*255)))
         painter.end()
 
 class MediaLibrary(QListWidget):
@@ -501,7 +528,7 @@ class Editor(QMainWindow):
         preview_btn=self.button('▶ Rendered Preview',self.rendered_preview)
         preview_btn.setToolTip(
             'Render a real MP4 to inspect the scene crossfades and final fade. '
-            'The live monitor shows the source clips without export effects.')
+            'The V1 monitor displays saved opacity fades and final fade live; other transition styles use Cut Preview.')
         header.addWidget(preview_btn)
         header.addWidget(self.button('↥ Export',self.export_video,True))
         top=QSplitter(Qt.Horizontal);main.addWidget(top,7)
@@ -525,6 +552,7 @@ class Editor(QMainWindow):
         self.video_sink=QVideoSink(self)
         self.video_sink.videoFrameChanged.connect(self.live_overlay.receive_frame)
         self.player.setVideoOutput(self.video_sink)
+        self.live_fades=LiveFadeController(self,self.live_overlay)
         ml.addWidget(self.monitor_host,1)
         self.monitor_layout=ml
         self.scrub=QSlider(Qt.Horizontal);self.scrub.setRange(0,10000);self.scrub.sliderMoved.connect(lambda n:self.seek(n/10000*max(self.total(),.001)));ml.addWidget(self.scrub)
@@ -2287,7 +2315,7 @@ class Editor(QMainWindow):
                      f'Intro: {runtime(intro):.1f}s of Eli-estimated action scenes. '
                      'Review scene estimates before exporting. '
                      'Export defaults: 0.5s scene dissolves and 1.0s final fade to black. '
-                     'The in-app source preview does not show these export-only transitions.')
+                     'The V1 monitor previews opacity crossfades; other styles use Cut Preview.')
             if music_path.text().strip():
                 summary+='\nMusic: '+Path(music_path.text().strip()).stem
             if pending and pending.get('focus_kills'):
@@ -2485,6 +2513,7 @@ class Editor(QMainWindow):
         self.track_choice.setCurrentIndex(TRACKS.index(self.track) if self.track in TRACKS else 0)
         self.track_choice.blockSignals(False)
     def new_project(self):
+        self.live_fades.reset()
         if self.clips and QMessageBox.question(self,'New Project','Discard the current unsaved timeline?')!=QMessageBox.Yes:return
         self.player.stop();self.clips=[];self.media=[];self.library.clear();self.selected=None;self.playhead=0;self.project_path=None;self.update_all()
     def capture_history(self):
@@ -2502,6 +2531,7 @@ class Editor(QMainWindow):
         self._history_busy=True
         try:
             self.player.pause()
+            self.live_fades.reset()
             self.clips,self.media,tracks,labels,colors=copy.deepcopy(self._history[index])
             TRACKS[:]=tracks;LABELS.clear();LABELS.update(labels);COLORS.clear();COLORS.update(colors)
             self._history_index=index;self.selected=None
@@ -2571,8 +2601,8 @@ class Editor(QMainWindow):
         introduction=QLabel(
             'Let Eli Work applies effects to the V1 timeline without exporting '
             'the whole video. Each saved transition shows a ↔ marker on V1. '
-            'The source monitor cannot play FFmpeg crossfades; use Preview '
-            'selected cut for a short in-app preview. '
+            'The V1 monitor plays saved opacity crossfades live. Other FFmpeg '
+            'transition styles require Preview selected cut. '
             'Leave styles unchecked for automatic randomization.')
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
@@ -3011,6 +3041,7 @@ class Editor(QMainWindow):
         self.note.setText(f'Removed {Path(path).name} from library (original file preserved).')
 
     def preview_library(self,item):
+        self.live_fades.reset()
         idx=self.library.row(item)
         if idx>=0:self.player.setPlaybackRate(1.0);self.preview_source(self.media[idx]['path'],0,0)
     def preview_source(self,path,source_sec,timeline_sec,autoplay=False):
@@ -3047,6 +3078,7 @@ class Editor(QMainWindow):
         elif status==QMediaPlayer.LoadingMedia:
             self.note.setText('Loading video...')
     def on_playback_state(self,state):
+        self.live_fades.update(self.playhead,state==QMediaPlayer.PlayingState)
         if state!=QMediaPlayer.PlayingState:
             self.stop_timeline_audio()
         else:
@@ -3096,6 +3128,7 @@ class Editor(QMainWindow):
         candidates=[(i,c) for i,c in enumerate(self.clips) if c.get('kind')=='video' and c['track'].startswith('V') and c['at']<=t<c['at']+duration(c)]
         return max(candidates,key=lambda p:TRACKS.index(p[1]['track'])*-1) if candidates else (None,None)
     def seek(self,t):
+        self.live_fades.reset()
         was_playing=self.player.playbackState()==QMediaPlayer.PlayingState
         self.playhead=max(0,min(self.total(),t));i,c=self.clip_at(self.playhead)
         if c:
@@ -3110,10 +3143,17 @@ class Editor(QMainWindow):
         if t<0:return
         self.playhead=min(self.total(),t)
         i,c=self.clip_at(self.playhead)
-        if c is None or c['path']!=self.active_path:
-            if c:
-                self.player.setPlaybackRate(c.get('speed',1.));self.preview_source(c['path'],c['start']+(self.playhead-c['at'])*c.get('speed',1.),self.playhead,autoplay=True)
-            else:self.player.pause()
+        # Same-file trims still require seeking at every V1 boundary.
+        # Otherwise the Qt source player continues into footage Eli removed.
+        expected=(c['start']+(self.playhead-c['at'])*c.get('speed',1.)) if c else None
+        needs_seek=bool(c and (c['path']!=self.active_path
+                         or abs(self.player.position()/1000.-expected)>.45))
+        if c is None:
+            self.player.pause()
+        elif needs_seek:
+            self.player.setPlaybackRate(c.get('speed',1.))
+            self.preview_source(c['path'],expected,self.playhead,autoplay=True)
+        self.live_fades.update(self.playhead,True)
         # Avoid rebuilding hundreds of timeline graphics items on every decoded frame.
         # Qt can emit positionChanged many times per second; limit UI refreshes.
         if ms-self.last_preview_ui_ms>=80 or ms<self.last_preview_ui_ms:
@@ -3128,6 +3168,7 @@ class Editor(QMainWindow):
         self.scrub.blockSignals(True)
         self.scrub.setValue(round(10000*self.playhead/max(total,.001)))
         self.scrub.blockSignals(False)
+        self.live_fades.update(self.playhead,self.player.playbackState()==QMediaPlayer.PlayingState)
         self.live_overlay.update()
     def stop_timeline_audio(self):
         for player, output in self.timeline_audio_players.values():
@@ -3350,6 +3391,7 @@ class Editor(QMainWindow):
         self.activateWindow()
 
     def closeEvent(self,event):
+        self.live_fades.reset()
         self.autosave_project()
         if self.fullscreen_window is not None:self.restore_preview()
         super().closeEvent(event)
