@@ -1,67 +1,113 @@
-"""Real-time V1 opacity crossfades using a second muted Qt video decoder.
+"""On-demand V1 transition preview. Renders only the half-second transition.
 
-The edited V1 remains authoritative. Preview never writes files or changes
-the FFmpeg export graph, trims, effects or source files.
+Uses the same FFmpeg xfade preset as export. Unlike Qt source playback, it
+predecodes both sides of a cut, caches composite frames, and paints those frames
+in the existing monitor. It never exports or modifies the full timeline.
 """
-import os
 import math
+import os
 import subprocess
-from PySide6.QtCore import QUrl, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
 
-def _seconds(clip):
-    return (float(clip['end'])-float(clip['start'])) / max(.01,float(clip.get('speed',1.)))
+PREVIEW_FPS=30
+PREVIEW_WIDTH=640
+PREVIEW_HEIGHT=360
+PREFETCH_SECONDS=9.
 
 
-def incoming_fade(clips, t, preload=2.0):
-    """Return source-accurate V1 opacity fade information near an edit point."""
+def _seconds(c):
+    return (float(c['end'])-float(c['start']))/max(.01,float(c.get('speed',1.)))
+
+
+def incoming_fade(clips, t, preload=2.):
+    """Return export-matched transition details around an edited V1 boundary."""
+    from media import eli_transition_profile
     t=float(t)
-    primary=sorted(
-        (clip for clip in clips if clip.get('track')=='V1'
-         and clip.get('kind','video')=='video'),
-        key=lambda clip:float(clip.get('at',0.)))
-    for old,new in zip(primary, primary[1:]):
-        boundary=float(new.get('at',0.))
-        seconds=float(new.get('crossfade_seconds',0.))
-        if (new.get('transition')!='fade' or seconds<.05
-                or not boundary-seconds-max(0.,float(preload))<=t<boundary):
+    primary=sorted((c for c in clips if c.get('track')=='V1' and
+                    c.get('kind','video')=='video'),
+                   key=lambda c:float(c.get('at',0.)))
+    for before,after in zip(primary,primary[1:]):
+        boundary=float(after['at'])
+        seconds=float(after.get('crossfade_seconds',0.))
+        style=str(after.get('transition','cut')).lower()
+        if (seconds<.05 or style=='cut' or
+                not boundary-seconds-max(0.,float(preload))<=t<boundary):
             continue
-        if abs(float(old.get('at',0.))+_seconds(old)-boundary)>.05:
+        if abs(float(before['at'])+_seconds(before)-boundary)>.05:
             continue
-        if min(_seconds(old),_seconds(new)) < 2*seconds-.005:
-            continue
-        same=(os.path.normcase(os.path.abspath(str(old['path'])))==
-              os.path.normcase(os.path.abspath(str(new['path']))))
-        if (same and abs(float(old['end'])-float(new['start']))<=.05
-                and abs(float(old.get('speed',1.))-float(new.get('speed',1.)))<=.0001
-                and not new.get('eli_force_transition',False)):
-            continue # FFmpeg joins consecutive source frames without blending
-        rate=max(.01,float(new.get('speed',1.)))
-        alpha=max(0.,min(1.,(t-(boundary-seconds))/seconds))
-        source_start=max(0.,float(new['start'])-seconds*rate)
-        return {'clip':new,'boundary':boundary,'seconds':seconds,
-                'alpha':alpha,'rate':rate,'source_start':source_start,
-                'source_at':boundary-seconds}
+        policy=eli_transition_profile(before,after)
+        if policy['kind']!='blend':continue
+        rate_a=max(.01,float(before.get('speed',1.)))
+        rate_b=max(.01,float(after.get('speed',1.)))
+        preroll=float(policy['preroll'])
+        return {
+            'before':before,'clip':after,'boundary':boundary,
+            'seconds':seconds,'style':style,
+            'rate_a':rate_a,'rate':rate_b,'preroll':preroll,
+            'freeze_pad':float(policy['freeze_pad']),
+            'source_a':max(0.,float(before['end'])-seconds*rate_a),
+            'source_start':max(0.,float(after['start'])-preroll*rate_b),
+            'source_at':boundary-seconds,
+            'alpha':max(0.,min(1.,(t-(boundary-seconds))/seconds))
+        }
     return None
 
 
-def ending_fade_gain(clips, t):
-    """Match the final exported whole-picture one-second fade to black."""
-    videos=sorted((c for c in clips if c.get('track')=='V1'
-                   and c.get('kind','video')=='video'),
+def ending_fade_gain(clips,t):
+    videos=sorted((c for c in clips if c.get('track')=='V1' and
+                   c.get('kind','video')=='video'),
                   key=lambda c:float(c.get('at',0.)))
-    if not videos or not videos[-1].get('eli_end_fade',False):
-        return 1.
+    if not videos or not videos[-1].get('eli_end_fade',False):return 1.
     end=float(videos[-1]['at'])+_seconds(videos[-1])
     fade=min(1.,end)
     return max(0.,min(1.,(end-float(t))/fade)) if fade else 1.
 
 
+def _key(w):
+    before,after=w['before'],w['clip']
+    return (
+        os.path.normcase(os.path.abspath(str(before['path']))),
+        round(w['source_a'],4),round(w['rate_a'],5),
+        os.path.normcase(os.path.abspath(str(after['path']))),
+        round(w['source_start'],4),round(w['rate'],5),
+        w['style'],round(w['seconds'],4),
+        round(w['freeze_pad'],4))
+
+
+def _ffmpeg_command(w):
+    """Produce a few FFmpeg xfade frames, not a rendered video file."""
+    from media import binary
+    d=w['seconds'];rate_a=w['rate_a'];rate_b=w['rate']
+    preroll=w['preroll'];pad=w['freeze_pad']
+    width=PREVIEW_WIDTH;height=PREVIEW_HEIGHT;fps=PREVIEW_FPS
+    video=(f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+           f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,'
+           f'fps={fps},format=yuv420p,')
+    freeze=f'tpad=start_mode=clone:start_duration={pad:.6f},' if pad>.001 else ''
+    graph=(
+        f'[0:v]trim=duration={d*rate_a:.6f},'
+        f'setpts=(PTS-STARTPTS)/{rate_a:.6f},{video}'
+        f'settb=AVTB,setpts=PTS-STARTPTS[a];'
+        f'[1:v]trim=duration={max(.10,preroll*rate_b):.6f},'
+        f'setpts=(PTS-STARTPTS)/{rate_b:.6f},{video}{freeze}'
+        f'settb=AVTB,setpts=PTS-STARTPTS[b];'
+        f'[a][b]xfade=transition={w["style"]}:duration={d:.6f}:offset=0,'
+        f'format=rgb24,fps={fps},trim=duration={d:.6f}[out]')
+    return [
+        binary('ffmpeg'),'-hide_banner','-nostdin','-loglevel','error',
+        '-ss',f'{w["source_a"]:.6f}','-t',f'{d*rate_a+.20:.6f}',
+        '-i',str(w['before']['path']),
+        '-ss',f'{w["source_start"]:.6f}',
+        '-t',f'{max(.25,preroll*rate_b+.20):.6f}',
+        '-i',str(w['clip']['path']),
+        '-filter_complex',graph,'-map','[out]','-frames:v',
+        str(max(2,int(math.ceil(d*fps)))),'-an',
+        '-f','rawvideo','-pix_fmt','rgb24','pipe:1']
+
 
 class FadeFrameWorker(QThread):
-    """Prefetch a short incoming V1 video segment, without exporting the video."""
     ready=Signal(object,object)
     failed=Signal(object,str)
 
@@ -72,150 +118,84 @@ class FadeFrameWorker(QThread):
 
     def run(self):
         try:
-            from media import binary
-            w=self.window
-            count=max(2,int(math.ceil(w['seconds']*30))+1)
-            width,height=640,360
-            source_start=float(w['source_start'])
-            command=[
-                binary('ffmpeg'),'-hide_banner','-nostdin','-loglevel','error',
-                '-ss',str(source_start),'-i',str(w['clip']['path']),
-                '-vf',('fps=30,scale=640:360:force_original_aspect_ratio=decrease,'
-                       'pad=640:360:(ow-iw)/2:(oh-ih)/2,format=rgb24'),
-                '-frames:v',str(count),'-an','-f','rawvideo',
-                '-pix_fmt','rgb24','pipe:1']
             result=subprocess.run(
-                command,capture_output=True,timeout=40,
+                _ffmpeg_command(self.window),capture_output=True,timeout=35,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             if result.returncode:
-                raise RuntimeError(result.stderr.decode(errors='replace')[-600:])
-            size=width*height*3
+                raise RuntimeError(
+                    result.stderr.decode('utf-8','replace')[-500:])
+            width,height=PREVIEW_WIDTH,PREVIEW_HEIGHT
+            frame_bytes=width*height*3
             frames=[]
-            for i in range(min(count,len(result.stdout)//size)):
-                data=result.stdout[i*size:(i+1)*size]
-                frame=QImage(data,width,height,width*3,QImage.Format_RGB888)
-                frames.append(frame.copy())
-            if not frames:
-                raise RuntimeError('No frames decoded for incoming fade')
+            for i in range(min(int(math.ceil(self.window['seconds']*PREVIEW_FPS)),
+                               len(result.stdout)//frame_bytes)):
+                data=result.stdout[i*frame_bytes:(i+1)*frame_bytes]
+                frames.append(QImage(data,width,height,width*3,QImage.Format_RGB888).copy())
+            if not frames:raise RuntimeError('FFmpeg returned zero V1 transition frames')
             self.ready.emit(self.key,frames)
         except Exception as exc:
             self.failed.emit(self.key,str(exc))
 
 
 class LiveFadeController:
-    """Preload and decode the incoming clip on a muted secondary video sink."""
-    def __init__(self, editor, overlay):
+    """Caches final xfade pictures so V1 playback and paused scrubbing work."""
+    def __init__(self,editor,overlay):
         self.editor=editor
         self.overlay=overlay
-        self.player=QMediaPlayer(editor)
-        self.audio=QAudioOutput(editor)
-        self.audio.setVolume(0.)
-        self.player.setAudioOutput(self.audio)
-        self.sink=QVideoSink(editor)
-        self.player.setVideoOutput(self.sink)
-        self.sink.videoFrameChanged.connect(self.on_frame)
-        self.player.mediaStatusChanged.connect(self.on_status)
-        self.key=None
-        self.window=None
-        self.playing=False
-        self.ready=False
         self.frames_cache={}
-        self.frame_workers={}
-        self.frame_failures=set()
-
-    def _frame_key(self,window):
-        clip=window['clip']
-        return (os.path.normcase(os.path.abspath(str(clip['path']))),
-                round(float(window['source_start']),3),
-                round(float(window['seconds']),3),
-                round(float(window['rate']),5))
-
-    def _request_frames(self,window):
-        key=self._frame_key(window)
-        if (key in self.frames_cache or key in self.frame_workers
-                or key in self.frame_failures):
-            return
-        if len(self.frame_workers)>=2:return
-        worker=FadeFrameWorker(key,window,self.editor)
-        self.frame_workers[key]=worker
-        def received(result_key,frames):
-            self.frames_cache[result_key]=frames
-            if len(self.frames_cache)>5:
-                oldest=next(iter(self.frames_cache))
-                if oldest!=result_key:self.frames_cache.pop(oldest,None)
-            self.update(self.editor.playhead,
-                        self.editor.player.playbackState()==QMediaPlayer.PlayingState)
-        worker.ready.connect(received)
-        worker.failed.connect(lambda result_key,msg:self.frame_failures.add(result_key))
-        worker.finished.connect(lambda:self.frame_workers.pop(key,None))
-        worker.start()
-
-    def on_frame(self,frame):
-        if self.window is not None and frame.isValid():
-            if self._frame_key(self.window) not in self.frames_cache:
-                self.overlay.receive_fade_frame(frame)
-
-    def on_status(self,status):
-        if status in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia,
-                      QMediaPlayer.BufferingMedia):
-            self.ready=True
-            if self.window is not None:
-                self._seek_to_timeline()
-                if self.playing and self.window['alpha']>0.:
-                    self.player.play()
-
-    def _seek_to_timeline(self):
-        if self.window is None:return
-        w=self.window
-        t=float(self.editor.playhead)
-        expected=max(0.,w['source_start']+
-                     (t-w['source_at'])*w['rate'])
-        ms=round(expected*1000)
-        if abs(self.player.position()-ms)>160:
-            self.player.setPosition(ms)
+        self.workers={}
+        self.failures={}
+        self.current_key=None
 
     def reset(self):
-        if self.key is not None:
-            self.player.stop()
-            self.player.setSource(QUrl())
-        self.key=None
-        self.window=None
-        self.ready=False
-        self.playing=False
+        self.current_key=None
         self.overlay.clear_fade_frame()
 
-    def update(self,seconds,playing):
-        ahead=incoming_fade(self.editor.clips,seconds,preload=10.)
-        if ahead is not None:self._request_frames(ahead)
-        w=incoming_fade(self.editor.clips,seconds)
-        if w is None:
-            if self.key is not None:self.reset()
+    def shutdown(self):
+        self.reset()
+        for worker in list(self.workers.values()):
+            if worker.isRunning():worker.wait(36000)
+
+    def _request(self,w):
+        key=_key(w)
+        if key in self.frames_cache or key in self.workers or key in self.failures:
             return
-        following=w['clip']
-        identity=(id(following),os.path.abspath(following['path']),
-                  float(following['start']),float(following['at']),
-                  w['seconds'],w['rate'])
-        if self.key!=identity:
-            self.reset()
-            self.key=identity
-            self.window=w
-            self.playing=bool(playing)
-            self.player.setPlaybackRate(w['rate'])
-            self.player.setSource(QUrl.fromLocalFile(os.path.abspath(following['path'])))
-        else:
-            self.window=w
-            self.playing=bool(playing)
-        cached=self.frames_cache.get(self._frame_key(w))
-        if cached and w['alpha']>0.:
-            frame_index=min(len(cached)-1,max(0,int(
-                (float(seconds)-(w['boundary']-w['seconds']))*30.)))
-            self.overlay.fade_image=cached[frame_index]
-        self.overlay.set_fade_alpha(
-            w['alpha'] if (cached or not self.overlay.fade_image.isNull()) else 0.)
-        if not self.ready:return
-        self._seek_to_timeline()
-        if playing and w['alpha']>0:
-            if self.player.playbackState()!=QMediaPlayer.PlayingState:
-                self.player.play()
-        elif self.player.playbackState()==QMediaPlayer.PlayingState:
-            self.player.pause()
+        if len(self.workers)>=2:return
+        worker=FadeFrameWorker(key,w,self.editor)
+        self.workers[key]=worker
+        def success(result_key,frames):
+            self.frames_cache[result_key]=frames
+            while len(self.frames_cache)>5:
+                self.frames_cache.pop(next(iter(self.frames_cache)))
+            self.update(self.editor.playhead,False)
+        def failure(result_key,msg):
+            self.failures[result_key]=msg
+            self.editor.note.setText('V1 transition preview failed: '+msg[:180])
+        def finished():
+            self.workers.pop(key,None)
+            worker.deleteLater()
+        worker.ready.connect(success)
+        worker.failed.connect(failure)
+        worker.finished.connect(finished)
+        worker.start()
+
+    def update(self,seconds,playing=False):
+        # Preload the *complete composited* transition, including wipes and
+        # dissolves, well before the playhead reaches it.
+        ahead=incoming_fade(self.editor.clips,seconds,preload=PREFETCH_SECONDS)
+        if ahead is not None:self._request(ahead)
+        actual=incoming_fade(self.editor.clips,seconds,preload=0.)
+        if actual is None:
+            if self.current_key is not None:self.reset()
+            return
+        key=_key(actual)
+        self.current_key=key
+        frames=self.frames_cache.get(key)
+        if not frames:
+            self.overlay.clear_fade_frame()
+            return
+        elapsed=max(0.,float(seconds)-(actual['boundary']-actual['seconds']))
+        pos=min(len(frames)-1,int(elapsed*PREVIEW_FPS))
+        # Precomposited image already includes BOTH clips, so draw it at 100%.
+        self.overlay.fade_image=frames[max(0,pos)]
+        self.overlay.set_fade_alpha(1.)
