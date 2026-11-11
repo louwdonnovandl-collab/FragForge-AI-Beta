@@ -1753,7 +1753,7 @@ class Editor(QMainWindow):
                         focus and pending and pending.get('combat_only')
                         and not allow_unverified.isChecked())
                     unverified_opening=[]
-                    if focus and not confirmed:
+                    if focus and pending and pending.get('combat_first') and not confirmed:
                         ranked_motion=sorted(
                             cuts.get('activity_peaks',[]),
                             key=lambda row:-float(row[1]))
@@ -1782,14 +1782,14 @@ class Editor(QMainWindow):
                             action_windows=scene_estimates,
                             playback_speed=playback_speed.value(),
                             explicit_speed=bool(pending and pending.get('explicit_speed')),
-                            prefer_action=focus)
+                            prefer_action=bool(pending and pending.get('combat_first')))
                         state['longform_report']=longform_report
                         if not segments:
                             state['planning_warning']=longform_report['warning']
                     else:
                         _,segments=precision_montage(
                             base,peaks,target_duration.value(),playback_speed.value(),
-                            runtime(intro),combat_markers=confirmed if focus else (),
+                            runtime(intro),combat_markers=confirmed if (focus and pending and pending.get('combat_first')) else (),
                             action_windows=scene_estimates,
                             require_action=strict_combat,
                             opening_priority_markers=unverified_opening)
@@ -1802,7 +1802,7 @@ class Editor(QMainWindow):
                         fallback_base=smart_pacing_segments(0.,full_end,cuts.get('stagnant',[]),[])
                         _,segments=precision_montage(
                             fallback_base,peaks,target_duration.value(),playback_speed.value(),
-                            runtime(intro),combat_markers=confirmed,
+                            runtime(intro),combat_markers=confirmed if (pending and pending.get('combat_first')) else (),
                             action_windows=scene_estimates)
                         state['supporting_footage']=bool(segments)
                     # Track actual support coverage instead of counting every
