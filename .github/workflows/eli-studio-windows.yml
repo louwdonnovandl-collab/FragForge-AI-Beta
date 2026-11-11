@@ -1,4 +1,4 @@
-name: Build Eli Studio v1.0.25 — Combat Priority Parser Fix
+name: Build Eli Studio v1.0.28 — Live V1 Fades and Long-form Cuts
 on:
   workflow_dispatch:
 permissions:
@@ -35,8 +35,8 @@ jobs:
           python -m PyInstaller --noconfirm --clean --windowed --onedir --name EliStudio --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --collect-all PySide6 --add-data "assets;assets" --add-data "effects_assets;effects_assets" --add-data "music_library;music_library" launcher.py
       - name: Archive Windows app
         shell: pwsh
-        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.25.zip
+        run: Compress-Archive -Path dist/EliStudio/* -DestinationPath Eli_Studio_v1.0.28.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Eli_Studio_v1.0.25
-          path: Eli_Studio_v1.0.25.zip
+          name: Eli_Studio_v1.0.28
+          path: Eli_Studio_v1.0.28.zip
