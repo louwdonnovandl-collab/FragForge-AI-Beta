@@ -51,7 +51,7 @@ assert sum(isinstance(n,ast.FunctionDef) and n.name=='interpret_request'
            for n in module.body)==1, 'Duplicate interpret_request overrides new behavior'
 assert sum(isinstance(n,ast.FunctionDef) and n.name=='describe_plan'
            for n in module.body)==1, 'Duplicate describe_plan overrides request summary'
-assert plan['combat_first'] and plan['focus_kills'], plan
+assert plan['focus_kills'] and not plan['combat_first'], plan
 assert plan['crossfade_seconds']==.5 and plan['end_fade_seconds']==1., plan
 assert plan['max_noncombat_opening_seconds']==3., plan
 assert plan['no_music'] and not plan['music'], plan
@@ -112,7 +112,7 @@ priority=interpret_request(
     'make a 10 minute edit, prioritize combat, add ripple transition '
     'between cuts at 1 second fades')
 assert priority['target_seconds']==600.,priority
-assert priority['focus_kills'] and priority['combat_first'],priority
+assert priority['focus_kills'] and not priority['combat_first'],priority
 assert not priority['combat_only'],priority
 assert priority['explicit_crossfade'],priority
 assert priority['transition_style']=='radial',priority
@@ -125,7 +125,7 @@ assert not general['focus_kills'] and not general['combat_only'],general
 # Strict behavior remains available ONLY by explicit wording.
 from local_director import chat_reply
 ack=chat_reply('Make a 10 minute video and prioritize combat')
-assert 'supporting scenes' in ack and 'combat only' not in ack,ack
+assert 'supporting gameplay allowed' in ack and 'combat only' not in ack,ack
 # Source correctness: no default strict blocks for prioritized edits.
 gui_text=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
 assert "pending.get('combat_only')" in gui_text
@@ -270,7 +270,7 @@ assert ending_fade_gain([first,second],5.)==1.
 assert ending_fade_gain([first,dict(second,eli_end_fade=False)],7.5)==1.
 print('PASS: live V1 fade timing, no false joins, and final fade')
 
-# v1.0.28: incoming V1 prefetch must start before the fade, not after it.
+# V1 on-demand FFmpeg compositing must begin before fade and support all styles.
 early=incoming_fade([first,second],-5.5,preload=10.)
 assert early and early['alpha']==0.,early
 assert incoming_fade([first,second],-8.,preload=10.) is None
@@ -279,3 +279,38 @@ assert 'class FadeFrameWorker(QThread):' in Path(__file__).with_name(
 # V1 direct playback and transition rendering must be independent of Export.
 assert "self.live_fades.update(self.playhead,True)" in gui_preview_source if 'gui_preview_source' in globals() else "self.live_fades.update(self.playhead,True)" in Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
 print('PASS: V1 crossfade prefetch begins ahead of scene boundary')
+
+# v1.0.29: prioritization must not silently rearrange timeline source order.
+request="make 10 minute edit, prioritize combat and exploration, remove pause screens, duplicate screens and maps"
+intent=interpret_request(request)
+assert intent['target_seconds']==600. and intent['combat_priority'],intent
+assert not intent['combat_first'] and not intent['combat_only'],intent
+assert intent['intro_seconds']==0,intent
+assert not interpret_request("Prioritize combat throughout a 60-second highlight")['combat_first']
+assert interpret_request("Start the video with combat")['combat_first']
+assert interpret_request("Put the best combat scene at the beginning")['combat_first']
+assert interpret_request("Combat first, then exploration")['combat_first']
+from longform_scene_planner import plan_longform
+chronological,report=plan_longform(
+    [(0.,650.,1.)],600.,
+    activity_peaks=[(float(t),10.) for t in range(20,640,16)],
+    quiet=[(float(t),float(t+16)) for t in range(45,620,67)],
+    action_windows=[(440.,456.,.9)],
+    prefer_action=False)
+if chronological:
+    assert chronological==sorted(chronological,key=lambda x:x[0]),chronological
+gui_source=Path(__file__).with_name("gui.py").read_text(encoding="utf-8")
+assert "prefer_action=bool(pending and pending.get('combat_first'))" in gui_source
+assert "combat_markers=confirmed if (focus and pending and pending.get('combat_first')) else ()" in gui_source
+# The precomposited preview contains the actual saved xfade style, not just
+# a second paused Qt video frame (which could be invisible during playback).
+from eli_live_preview import _ffmpeg_command
+for style in ('fade','dissolve','wipeleft','radial','pixelize'):
+    incoming=dict(second,transition=style)
+    candidate=incoming_fade([first,incoming],3.75)
+    assert candidate and candidate['style']==style,candidate
+    command=_ffmpeg_command(candidate)
+    assert any("xfade=transition="+style in part for part in command),command
+assert 'self.overlay.set_fade_alpha(1.)' in Path(__file__).with_name(
+    "eli_live_preview.py").read_text(encoding="utf-8")
+print("PASS: priority respects source chronology and V1 previews true FFmpeg transitions")
