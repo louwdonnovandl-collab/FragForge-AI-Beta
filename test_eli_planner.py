@@ -179,3 +179,28 @@ assert len(new_blocks)>=12,(len(new_blocks),seams[:10])
 assert any(reason=='quiet' for _,reason in seams),seams[:10]
 assert all((b-a)>12. for a,b,*_ in new_blocks),new_blocks
 print('PASS: low-motion seams survive dense unverified spikes, actions remain protected')
+
+
+# Regression: an estimated fight at 51.5 seconds must be moved near
+# the beginning, not clear the edit and disable Apply selected edit.
+from director_executor import prioritize_action_opening
+original=[(0.,65.,1.),(90.,125.,1.),(160.,205.,1.)]
+arranged,first=prioritize_action_opening(original,[51.5],3.)
+assert first is not None and first<=3.0,(first,arranged)
+assert abs(runtime(arranged)-runtime(original))<.001,arranged
+assert arranged[0][0]<=51.5<=arranged[0][1],arranged
+assert arranged[0][0]>40.,arranged
+# Prioritize action, do not silently drop the early footage.
+assert any(abs(a-0.)<.001 and abs(b-arranged[0][0])<.001
+           for a,b,_ in arranged[1:]),arranged
+# A scene already meeting the opening constraint remains unchanged.
+unchanged,lead=prioritize_action_opening(
+    [(40.,65.,1.),(90.,125.,1.)],[42.],3.)
+assert unchanged==[(40.,65.,1.),(90.,125.,1.)] and lead==2.
+# Missing evidence should not invent an action candidate.
+missing,lead=prioritize_action_opening(original,[400.],3.)
+assert missing==original and lead is None
+gui_text=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
+assert "rearranged,first_match=prioritize_action_opening(" in gui_text
+assert "Combat-first requirement failed — edit blocked." not in gui_text
+print('PASS: later detected fight moves to opening without disabling Apply or losing footage')
