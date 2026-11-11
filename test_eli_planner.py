@@ -204,3 +204,35 @@ gui_text=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
 assert "rearranged,first_match=prioritize_action_opening(" in gui_text
 assert "Combat-first requirement failed — edit blocked." not in gui_text
 print('PASS: later detected fight moves to opening without disabling Apply or losing footage')
+
+
+# v1.0.25: Negative exclusivity wording must not turn priority into combat-only.
+real_request=(
+    "Create a 60-second gameplay highlight video. "
+    "Prioritize combat and action. Find fighting scenes throughout the entire "
+    "recording and place the best combat scene at the beginning, with action "
+    "appearing within the first 3 seconds. "
+    "Include normal gameplay where needed to reach exactly 60 seconds. "
+    "Prioritize does not mean combat only. "
+    "Keep natural scene lengths. Avoid repetitive 4.5-second clips. "
+    "Apply smooth 0.5-second crossfades and a 1-second fade to black at the end. "
+    "Keep original gameplay audio. Do not add music.")
+parsed=interpret_request(real_request)
+assert parsed['target_seconds']==60,parsed
+assert parsed['focus_kills'] and parsed['combat_first'],parsed
+assert parsed['combat_priority'] and not parsed['combat_only'],parsed
+assert parsed['no_music'],parsed
+assert parsed['explicit_crossfade'] and parsed['explicit_end_fade'],parsed
+for request in (
+    'Make a 60-second video prioritizing combat, not combat only.',
+    'Prioritize fighting. Include normal gameplay where needed.',
+    'Combat first, do not restrict the edit to combat only.'):
+    plan=interpret_request(request)
+    assert not plan['combat_only'],(request,plan)
+for request in (
+    'Make a 60-second edit with combat only, no filler footage.',
+    'Show exclusively combat; no other gameplay.',
+    'I want only combat in this video.'):
+    plan=interpret_request(request)
+    assert plan['combat_only'],(request,plan)
+print('PASS: exact user prompt allows normal gameplay; genuine combat-only requests remain strict')
