@@ -10,7 +10,7 @@ from media import probe, export_layers, nvenc_available, binary
 from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
-from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage
+from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
 from longform_scene_planner import plan_longform
 from version import DISPLAY_NAME
 from vision_director import installed_models, scan as vision_scan, combat_windows, scene_windows
@@ -1854,33 +1854,31 @@ class Editor(QMainWindow):
                 release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
                 return
             state['windows']=windows;results.clear()
-            if pending and pending.get('combat_first') and confirmed:
-                output_cursor=runtime(state['intro'])
-                first_match=None
-                for idx,(a,b) in enumerate(windows):
-                    rate=state['segments'][idx][2] if state['segments'] else 1.
-                    hits=[t for t in confirmed if a<=t<=b]
-                    if hits:
-                        first_match=output_cursor+(min(hits)-a)/max(.01,rate)
-                        break
-                    output_cursor+=(b-a)/max(.01,rate)
-                state['first_combat_output_seconds']=first_match
+            if pending and pending.get('combat_first') and confirmed and windows:
                 maximum=float(pending.get('max_noncombat_opening_seconds',3))
-                if first_match is None or first_match>maximum+.05:
-                    state['windows']=[]
+                # Move estimated combat to the front instead of rejecting a
+                # valid montage because its first event was later in the source.
+                if state['segments']:
+                    rearranged,first_match=prioritize_action_opening(
+                        state['segments'],confirmed,maximum)
+                    state['segments']=rearranged
+                    windows=[(a,b) for a,b,_ in rearranged]
+                else:
+                    first_match=None
+                state['first_combat_output_seconds']=(
+                    runtime(state['intro'])+first_match
+                    if first_match is not None else None)
+                if first_match is None:
                     state['planning_warning']=(
-                        f'Combat-first requested: first supported candidate would appear at '
-                        f'{first_match if first_match is not None else -1:.1f}s, '
-                        f'outside the first {maximum:g}s. '
-                        'Revise combat timestamps or analysis settings before applying.')
-                    results.clear()
-                    status.setText(state['planning_warning'])
-                    work_message.setText('Combat-first requirement failed — edit blocked.')
-                    analysis_bar.setValue(100)
-                    editor_tabs.setCurrentWidget(scroll)
-                    analyze.setEnabled(True);apply.setEnabled(False)
-                    release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
-                    return
+                        'No selected scene contains the estimated combat marker. '
+                        'Eli can still apply the prepared general gameplay edit.')
+                elif runtime(state['intro'])+first_match>maximum+.05:
+                    # The intro would push combat out of the requested opening.
+                    # Preserve the video rather than throwing away the plan.
+                    state['planning_warning']=(
+                        'Combat opening follows the existing intro; '
+                        'set intro duration to zero for combat in the first '
+                        f'{maximum:g} seconds.')
             planned=[('intro',a,b,s) for a,b,s in state['intro']]
             planned += [('main',a,b,state['segments'][i][2] if state['segments'] else 1.) for i,(a,b) in enumerate(windows)]
             state['cues']=ranked_activity_cues(cuts.get('activity_peaks',[]),planned)
