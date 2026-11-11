@@ -45,14 +45,14 @@ def extract_output_duration(text):
 def interpret_request(text):
     """Extract explicit user constraints without LLM changes to numeric input."""
     t = text.lower().replace('×', 'x')
-    intro = re.search(r'(?:intro|opening)[^\n.]{0,65}?(\d{1,2})\s*(?:seconds?|secs?|s\b)', t)
-    intro_alt = re.search(r'(\d{1,2})\s*(?:seconds?|secs?|s\b)[^\n.]{0,40}?(?:intro|opening)', t)
-    intro_seconds = min(20, int((intro or intro_alt).group(1))) if (intro or intro_alt) else (10 if re.search(r'\b(intro|opening)\b', t) else 0)
+    intro = re.search(r'\bintro\b[^\n.]{0,65}?(\d{1,2})\s*(?:seconds?|secs?|s\b)', t)
+    intro_alt = re.search(r'(\d{1,2})\s*(?:seconds?|secs?|s\b)[^\n.]{0,40}?\bintro\b', t)
+    intro_seconds = min(20, int((intro or intro_alt).group(1))) if (intro or intro_alt) else (10 if re.search(r'\bintro\b', t) else 0)
     target_seconds = extract_output_duration(text)
     speed_match = re.search(r'\b(?:sped\s*up|speed(?:\s*up)?|playback)(?:\s*(?:to|at|by))?\s*(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)?', t) or re.search(r'\b(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)', t)
     requested_speed = max(.25,min(8.,float(speed_match.group(1).replace(',','.')))) if speed_match else 1.
     highlight = bool(re.search(r'\b(highlights?|montage|shorts?|reels?|tiktok|clips?)\b',t))
-    focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|multikills?)\b',t))
+    focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|fighting|multikills?)\b',t))
     focus_loot = bool(re.search(r'\b(loot|looting|inventory|supplies|containers?)\b',t))
     # Negation must be resolved before positive keyword detection: "do not add music"
     # contains "music" but is explicitly NOT a music request.
@@ -82,7 +82,29 @@ def interpret_request(text):
     combat_only=exclusive_request and not (
         denied_exclusivity or supports_other_gameplay)
     priority_combat=bool(focus_kills and re.search(
-        r'\b(?:prioriti[sz]e|focus|first|start with|lead with|mostly)\b',t))
+        r'\b(?:prioriti[sz]e|focus|mostly|emphasi[sz]e|highlight|feature|mainly)\b',t))
+    # Prioritising footage is a selection/ranking preference, NOT a request
+    # to rearrange time. Only clear, affirmative placement instructions may
+    # make combat the opening. Keep this separate from combat_only.
+    opening_patterns=(
+        r'\b(?:start|begin|open|lead)\s+'
+        r'(?:(?:the|my|this|our|video|edit|montage)\s+){0,4}'
+        r'(?:with|on)\s+(?:(?:a|the|best|strongest|short|quick|good|'
+        r'exciting)\s+){0,3}(?:combat|fight(?:ing)?|kills?|action|battle)\b',
+        r'\b(?:put|place|move|show|feature|use)\b[^.!?\n]{0,85}?'
+        r'\b(?:combat|fight(?:ing)?|kills?|action|battle)\b'
+        r'[^.!?\n]{0,65}?\b(?:at|in|near|within)\s+(?:the\s+)?'
+        r'(?:very\s+)?(?:start|beginning|opening|first\s+\d+\s+seconds?)\b',
+        r'\b(?:combat|fight(?:ing)?|kills?|action|battle)\s+first\b',
+        r'\b(?:combat|fight(?:ing)?|kills?|action|battle)\s+'
+        r'(?:at\s+the\s+)?(?:start|beginning|opening)\b',
+        r'\b(?:first\s+\d+\s+seconds?|opening|intro)\b'
+        r'[^.!?\n]{0,55}?\b(?:combat|fight(?:ing)?|kills?|action|battle)\b',
+        r'\b(?:combat|fight(?:ing)?|kills?|action|battle)\b'
+        r'[^.!?\n]{0,55}?\bwithin\s+the\s+first\s+\d+\s+seconds?\b',
+    )
+    combat_opening=bool(focus_kills and any(
+        re.search(pattern,t) for pattern in opening_patterns))
     transitions_explicit=bool(re.search(
         r'\b(?:cross[- ]?fades?|dissolves?|transitions?|ripple|turbulence|'
         r'wipes?|slides?)\b',t))
@@ -125,8 +147,7 @@ def interpret_request(text):
         'end_fade_seconds':1.0,
         'combat_only':combat_only,
         'combat_priority':priority_combat,
-        'combat_first':bool(focus_kills and (priority_combat or combat_only or highlight
-                                            or target_seconds and target_seconds<=180)),
+        'combat_first':combat_opening,
         'max_noncombat_opening_seconds':3.0,
         'no_music':no_music,
         'original':text.strip(),
@@ -146,9 +167,9 @@ def describe_plan(p):
         'Create intro: '+(str(p['intro_seconds'])+' seconds' if p['intro_seconds'] else 'Not requested'),
         'Focus on kills: '+yes(p.get('focus_kills',False)),
         'Combat policy: '+('Combat ONLY (explicit requirement)' if p.get('combat_only')
-                           else 'Combat FIRST; other gameplay allowed' if p.get('focus_kills')
+                           else 'Combat prioritized throughout; supporting gameplay allowed' if p.get('focus_kills')
                            else 'General gameplay'),
-        'Opening: '+('prioritize possible combat within first 3 seconds; do not claim a verified kill' if p.get('combat_first') else 'chronological/general footage'),
+        'Opening: '+('prioritize possible combat within first 3 seconds; do not claim a verified kill' if p.get('combat_first') else 'source order preserved unless a different opening was explicitly requested'),
         'Focus on looting: '+yes(p.get('focus_loot',False)),
         ('Export transitions: '+p.get('transition_style','fade')
          +f" ({p.get('crossfade_seconds',0.5):g}s) — requested"
