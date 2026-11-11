@@ -221,9 +221,8 @@ def plan_longform(segments,target_seconds,activity_peaks=(),quiet=(),
         return [],report
     selected=[blocks[i] for i in indices]
     selected.sort(key=lambda b:b[0])
-    # "Prioritize" is first, never "combat only". Put a selected candidate
-    # action scene at the front without splitting it, then follow with remaining
-    # clips in source order. With no evidence, use the strongest activity scene.
+    # Reorder only for an explicit request to START with combat. Content
+    # priority alone selects action-weighted blocks without reshuffling them.
     if prefer_action and selected:
         best=max(range(len(selected)),
                  key=lambda i:(selected[i][3]>0,selected[i][3],
