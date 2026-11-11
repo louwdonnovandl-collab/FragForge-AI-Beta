@@ -4,7 +4,9 @@ The edited V1 remains authoritative. Preview never writes files or changes
 the FFmpeg export graph, trims, effects or source files.
 """
 import os
-from PySide6.QtCore import QUrl
+import math
+import subprocess
+from PySide6.QtCore import QUrl, QThread, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
@@ -57,6 +59,49 @@ def ending_fade_gain(clips, t):
     return max(0.,min(1.,(end-float(t))/fade)) if fade else 1.
 
 
+
+class FadeFrameWorker(QThread):
+    """Prefetch a short incoming V1 video segment, without exporting the video."""
+    ready=Signal(object,object)
+    failed=Signal(object,str)
+
+    def __init__(self,key,window,parent=None):
+        super().__init__(parent)
+        self.key=key
+        self.window=dict(window)
+
+    def run(self):
+        try:
+            from media import binary
+            w=self.window
+            count=max(2,int(math.ceil(w['seconds']*30))+1)
+            width,height=640,360
+            source_start=float(w['source_start'])
+            command=[
+                binary('ffmpeg'),'-hide_banner','-nostdin','-loglevel','error',
+                '-ss',str(source_start),'-i',str(w['clip']['path']),
+                '-vf',('fps=30,scale=640:360:force_original_aspect_ratio=decrease,'
+                       'pad=640:360:(ow-iw)/2:(oh-ih)/2,format=rgb24'),
+                '-frames:v',str(count),'-an','-f','rawvideo',
+                '-pix_fmt','rgb24','pipe:1']
+            result=subprocess.run(
+                command,capture_output=True,timeout=40,
+                creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if result.returncode:
+                raise RuntimeError(result.stderr.decode(errors='replace')[-600:])
+            size=width*height*3
+            frames=[]
+            for i in range(min(count,len(result.stdout)//size)):
+                data=result.stdout[i*size:(i+1)*size]
+                frame=QImage(data,width,height,width*3,QImage.Format_RGB888)
+                frames.append(frame.copy())
+            if not frames:
+                raise RuntimeError('No frames decoded for incoming fade')
+            self.ready.emit(self.key,frames)
+        except Exception as exc:
+            self.failed.emit(self.key,str(exc))
+
+
 class LiveFadeController:
     """Preload and decode the incoming clip on a muted secondary video sink."""
     def __init__(self, editor, overlay):
@@ -74,10 +119,41 @@ class LiveFadeController:
         self.window=None
         self.playing=False
         self.ready=False
+        self.frames_cache={}
+        self.frame_workers={}
+        self.frame_failures=set()
+
+    def _frame_key(self,window):
+        clip=window['clip']
+        return (os.path.normcase(os.path.abspath(str(clip['path']))),
+                round(float(window['source_start']),3),
+                round(float(window['seconds']),3),
+                round(float(window['rate']),5))
+
+    def _request_frames(self,window):
+        key=self._frame_key(window)
+        if (key in self.frames_cache or key in self.frame_workers
+                or key in self.frame_failures):
+            return
+        if len(self.frame_workers)>=2:return
+        worker=FadeFrameWorker(key,window,self.editor)
+        self.frame_workers[key]=worker
+        def received(result_key,frames):
+            self.frames_cache[result_key]=frames
+            if len(self.frames_cache)>5:
+                oldest=next(iter(self.frames_cache))
+                if oldest!=result_key:self.frames_cache.pop(oldest,None)
+            self.update(self.editor.playhead,
+                        self.editor.player.playbackState()==QMediaPlayer.PlayingState)
+        worker.ready.connect(received)
+        worker.failed.connect(lambda result_key,msg:self.frame_failures.add(result_key))
+        worker.finished.connect(lambda:self.frame_workers.pop(key,None))
+        worker.start()
 
     def on_frame(self,frame):
         if self.window is not None and frame.isValid():
-            self.overlay.receive_fade_frame(frame)
+            if self._frame_key(self.window) not in self.frames_cache:
+                self.overlay.receive_fade_frame(frame)
 
     def on_status(self,status):
         if status in (QMediaPlayer.LoadedMedia,QMediaPlayer.BufferedMedia,
@@ -109,6 +185,8 @@ class LiveFadeController:
         self.overlay.clear_fade_frame()
 
     def update(self,seconds,playing):
+        ahead=incoming_fade(self.editor.clips,seconds,preload=10.)
+        if ahead is not None:self._request_frames(ahead)
         w=incoming_fade(self.editor.clips,seconds)
         if w is None:
             if self.key is not None:self.reset()
@@ -127,7 +205,13 @@ class LiveFadeController:
         else:
             self.window=w
             self.playing=bool(playing)
-        self.overlay.set_fade_alpha(w['alpha'])
+        cached=self.frames_cache.get(self._frame_key(w))
+        if cached and w['alpha']>0.:
+            frame_index=min(len(cached)-1,max(0,int(
+                (float(seconds)-(w['boundary']-w['seconds']))*30.)))
+            self.overlay.fade_image=cached[frame_index]
+        self.overlay.set_fade_alpha(
+            w['alpha'] if (cached or not self.overlay.fade_image.isNull()) else 0.)
         if not self.ready:return
         self._seek_to_timeline()
         if playing and w['alpha']>0:
