@@ -236,3 +236,18 @@ for request in (
     plan=interpret_request(request)
     assert plan['combat_only'],(request,plan)
 print('PASS: exact user prompt allows normal gameplay; genuine combat-only requests remain strict')
+
+
+# v1.0.26: Sparse high-motion observations must NOT generate a series
+# of 4.5-second clips. Keep source context and exact requested runtime.
+synthetic_peaks=[(45. + i*35.,9. + (i % 4)*2.) for i in range(12)]
+_,natural=precision_montage(
+    [(0.,600.,1.)],synthetic_peaks,60.,
+    combat_markers=[51.5],action_windows=[(49.,54.2,.9)])
+assert natural and abs(runtime(natural)-60.)<.2,natural
+clip_lengths=[(b-a)/rate for a,b,rate in natural]
+assert sum(abs(length-4.5)<.11 for length in clip_lengths)<=1,clip_lengths
+assert sum(length>=7. for length in clip_lengths)>=3,clip_lengths
+assert len(natural)<=10,clip_lengths
+assert any(a<=51.5<=b for a,b,rate in natural),natural
+print('PASS: 60s highlight montage preserves variable 7.5–11s gameplay scenes')
