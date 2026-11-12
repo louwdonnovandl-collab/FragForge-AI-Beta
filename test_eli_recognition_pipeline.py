@@ -37,7 +37,7 @@ assert any(0<t-22.<4. for t in centers),centers
 
 # Simulate one continuous high-importance fight, preserving 34 seconds rather
 # than chopping it into uniform 4-second fragments.
-actions=[dict(time=5.+i*3.2,kind='weapon_swing',confidence=.9,
+actions=[dict(time=5.+i*2.6,kind='weapon_swing',confidence=.9,
               key_marker=True)
          for i in range(9)]
 keys=build_key_scenes(actions,500.,target_seconds=60.,speed=1.)
