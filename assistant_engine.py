@@ -63,7 +63,10 @@ def interpret_request(text):
     )
     requested_speed = max(.25,min(8.,float(speed_match.group(1).replace(',','.')))) if speed_match else 1.
     highlight = bool(re.search(r'\b(highlights?|montage|shorts?|reels?|tiktok|clips?)\b',t))
-    focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|fighting|multikills?)\b',t))
+    focus_kills = bool(re.search(\n        r'\b(?:kills?|zombies?|takedowns?|combat|fights?|fighting|multikills?|'
+        r'punch(?:es|ing)?|kicks?|kicking|shooting|gunfire|gunshots?|'
+        r'weapon[ -]?swings?|swinging|melee|explosions?|impacts?|'
+        r'blood[ -]?(?:splatters?|effects?))\b',t))
     focus_loot = bool(re.search(r'\b(loot|looting|inventory|supplies|containers?)\b',t))
     # Negation must be resolved before positive keyword detection: "do not add music"
     # contains "music" but is explicitly NOT a music request.
