@@ -1074,7 +1074,7 @@ class Editor(QMainWindow):
                     if parsed.get('explicit_crossfade') else 'Transitions: unchanged',
                     'Game audio: preserved'
                 ]
-                chat.appendPlainText('Eli edit settings: '+' | '.join(summary)+'\\n')
+                chat.appendPlainText('Eli edit settings: '+' | '.join(summary)+'\n')
                 launch.setEnabled(True)
             chat_mode=True
             # Preserve the last valid edit plan while processing follow-up chat.
