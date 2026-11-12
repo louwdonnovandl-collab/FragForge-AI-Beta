@@ -1918,7 +1918,10 @@ class Editor(QMainWindow):
             # shots. One long source trim is not an edited montage.
             if (pending and pending.get('explicit_crossfade') and
                     float(target_duration.value())>=12. and
-                    len(windows)<2 and not state.get('planning_warning','').startswith('Eli could not')):
+                    (len(windows)<2 or not any(
+                        float(next_a)-float(prev_b)>=1.
+                        for (_,prev_b),(next_a,_) in zip(windows,windows[1:])))
+                    and not state.get('planning_warning','').startswith('Eli could not')):
                 try:
                     requested_rate=(playback_speed.value()
                                     if pending.get('explicit_speed') else 1.)
