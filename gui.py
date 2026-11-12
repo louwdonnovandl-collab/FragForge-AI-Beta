@@ -434,8 +434,10 @@ class VisionScanWorker(QThread):
     failed=Signal(str)
     progress=Signal(int)
     def __init__(self,path,end,model,audio_enabled=True,seed_times=(),
-                 requested_events=('combat',),max_frames=None,reference_time=None):
+                 requested_events=('combat',),max_frames=None,reference_time=None,
+                 allowed_ranges=None):
         super().__init__();self.path=path;self.end=end;self.model=model
+        self.allowed_ranges=list(allowed_ranges or ())
         self.audio_enabled=audio_enabled;self.seed_times=list(seed_times)
         self.requested_events=tuple(requested_events)
         self.max_frames=max_frames;self.reference_time=reference_time
@@ -448,7 +450,8 @@ class VisionScanWorker(QThread):
                                self.cancel_event,profile=getattr(self,'profile','Balanced'),
                                max_frames=self.max_frames,
                                seed_times=self.seed_times,requested_events=self.requested_events,
-                               reference_time=self.reference_time)
+                               reference_time=self.reference_time,
+                               allowed_ranges=self.allowed_ranges)
             if self.audio_enabled:
                 try:
                     audio=scan_audio(self.path,self.end,lambda pct:self.progress.emit(75+int(pct*.25)),self.cancel_event)
@@ -2204,12 +2207,19 @@ class Editor(QMainWindow):
             desired=('combat',) if pending and pending.get('focus_kills') else ()
             if pending and pending.get('focus_loot'):
                 desired+=('looting',)
+            # Constrain re-analysis to retained V1 clips from this source.
+            # No old deleted source span can consume the limited vision budget.
+            current_ranges=(
+                [(float(c['start']),float(c['end'])) for c in v1_snapshot
+                 if os.path.abspath(str(c['path']))==os.path.abspath(str(source['path']))]
+                if edited_v1 else [])
             worker=VisionScanWorker(
                 source['path'],full_end,model,audio_enabled.isChecked(),
                 seed_times=cuts.get('activity_peaks',[]),
                 requested_events=desired or ('combat',),
                 max_frames=int(vision_detail.currentData()),
-                reference_time=reference)
+                reference_time=reference,
+                allowed_ranges=current_ranges)
             worker.profile=getattr(self,'_ai_performance_mode','Accelerated')
             self._vision_scan_worker=worker
             worker.progress.connect(lambda pct:(analysis_bar.setValue(min(99, max(0, pct))),activity.update(last_update=time.monotonic(),stage='Analyzing gameplay visuals')))
