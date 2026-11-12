@@ -77,6 +77,9 @@ def sequence_centers(samples,peaks,source_end,limit,reference=None):
     limit=max(0,int(limit))
     if limit==0:return []
     end=max(.25,float(source_end))
+    # Reserve one third of the action frames for repeated attacks in the
+    # immediately following seconds rather than scattering every sample.
+    initial_limit=max(1,(2*limit+2)//3)
     picks=[]
     def add(t,spacing=7.):
         t=max(.8,min(end-.8,float(t)))
@@ -88,7 +91,7 @@ def sequence_centers(samples,peaks,source_end,limit,reference=None):
          for item in samples if item.get('event')=='combat'),
         key=lambda x:-x[1])
     for t,_ in strong:
-        if len(picks)>=limit:break
+        if len(picks)>=initial_limit:break
         add(t)
     # Visual activity is only a reason to inspect a region, not a claim of
     # combat. Diversity prevents checking six frames in the same fight.
@@ -100,9 +103,9 @@ def sequence_centers(samples,peaks,source_end,limit,reference=None):
             if min(buckets-1,int(t/end*buckets))==bucket:
                 add(t)
                 break
-        if len(picks)>=limit:break
+        if len(picks)>=initial_limit:break
     for t,_ in peak_list:
-        if len(picks)>=limit:break
+        if len(picks)>=initial_limit:break
         add(t)
     # Spend a share of the available three-frame checks just AFTER promising
     # actions to detect repeated hits within the same 4-second key scene.
