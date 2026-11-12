@@ -1093,6 +1093,9 @@ class Editor(QMainWindow):
                 QMessageBox.information(dlg,'Eli','Tell me what you want edited first.');return
             self._assistant_request=value
             chat.appendPlainText('You: '+value)
+            # Preserve chat history and pending edit instruction, then make
+            # the entry box immediately ready for the next message.
+            request.clear()
             # Send Message is conversation-only. Never start analysis here.
             # Remember edit instructions so Prepare Edit can act on them later.
             edit_intent=bool(re.search(r'\b(edit|montage|highlight|clip|cut|trim|fade|transition|music|rock|combat|kill|video|gameplay)\b',value,re.I))
@@ -1160,6 +1163,25 @@ class Editor(QMainWindow):
             worker.failed.connect(failed)
             worker.finished.connect(worker.deleteLater)
             worker.start()
+        # Enter sends; Shift+Enter inserts a newline. Filtering the input
+        # widget (rather than installing a global shortcut) avoids stealing
+        # Enter from the model selector, dialog buttons, and other controls.
+        class EliMessageKeys(QObject):
+            def eventFilter(self, obj, event):
+                if obj is request and event.type()==QEvent.KeyPress:
+                    if event.key() in (Qt.Key_Return,Qt.Key_Enter):
+                        if event.modifiers() & Qt.ShiftModifier:
+                            return False
+                        if event.modifiers() & (Qt.ControlModifier|Qt.AltModifier|Qt.MetaModifier):
+                            return False
+                        if send.isEnabled() and request.toPlainText().strip():
+                            send_request()
+                        event.accept()
+                        return True
+                return False
+        self._eli_chat_key_filter=EliMessageKeys(request)
+        request.installEventFilter(self._eli_chat_key_filter)
+
         def reset():
             state['plan']=None
             preview.clear()
