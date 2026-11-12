@@ -7,7 +7,7 @@ All decisions are inspectable and user-reviewable, never ground truth.
 import json
 import re
 
-ACTION_TYPES=('gunfire','punch','kick','weapon_swing','shove','impact','none')
+ACTION_TYPES=('gunfire','punch','kick','weapon_swing','shove','impact','explosion','blood_change','none')
 ACTION_ALIASES={
     'shooting':'gunfire','shot':'gunfire','gunshot':'gunfire',
     'firing':'gunfire','firearm':'gunfire',
@@ -18,6 +18,8 @@ ACTION_ALIASES={
     'bat_swing':'weapon_swing','axe_swing':'weapon_swing',
     'pushing':'shove','push':'shove','grapple':'shove',
     'hit':'impact','contact':'impact','collision':'impact',
+    'blast':'explosion','detonation':'explosion',
+    'new_blood':'blood_change','blood_splatter_change':'blood_change',
     'unknown':'none','other':'none','walking':'none',
 }
 ACTIVE_ACTIONS=set(ACTION_TYPES)-{'none'}
@@ -48,7 +50,9 @@ def parse_sequence_reply(response, center, frame_times):
     # An impact is not specific combat unless the model explicitly reports
     # interaction between a character/weapon and a target across the frames.
     interaction=payload.get('attacker_target_interaction',False) is True
-    if not movement or (name=='impact' and not interaction):
+    new_blood=payload.get('new_blood_visible',False) is True
+    if (not movement or (name=='impact' and not interaction)
+            or (name=='blood_change' and not new_blood)):
         name='none'
     return {
         'time':round(float(center),2),
@@ -56,6 +60,7 @@ def parse_sequence_reply(response, center, frame_times):
         'action':name,'confidence':round(confidence,3),
         'visible_change':movement,
         'attacker_target_interaction':interaction,
+        'new_blood_visible':new_blood,
         'combat_candidate':bool(name in ACTIVE_ACTIONS and confidence>=.65),
         'audio_support':False,
         'evidence':'3 ordered gameplay frames; estimated motion, not verified combat outcome',
@@ -73,9 +78,9 @@ def sequence_centers(samples,peaks,source_end,limit,reference=None):
     if limit==0:return []
     end=max(.25,float(source_end))
     picks=[]
-    def add(t):
+    def add(t,spacing=7.):
         t=max(.8,min(end-.8,float(t)))
-        if all(abs(t-old)>=12. for old in picks):
+        if all(abs(t-old)>=spacing for old in picks):
             picks.append(t)
     if reference is not None:add(reference)
     strong=sorted(
@@ -99,6 +104,16 @@ def sequence_centers(samples,peaks,source_end,limit,reference=None):
     for t,_ in peak_list:
         if len(picks)>=limit:break
         add(t)
+    # Spend a share of the available three-frame checks just AFTER promising
+    # actions to detect repeated hits within the same 4-second key scene.
+    # The previous 12s spacing prevented any 4+4+4 grouping.
+    anchors=list(picks)
+    for anchor in anchors:
+        if len(picks)>=limit:break
+        add(anchor+2.8,spacing=1.8)
+    for anchor in anchors:
+        if len(picks)>=limit:break
+        add(anchor+5.6,spacing=1.8)
     return sorted(picks[:limit])
 
 
