@@ -31,7 +31,7 @@ jobs:
           if (Test-Path requirements.txt) { python -m pip install -r requirements.txt }
       - name: Verify source syntax
         shell: pwsh
-        run: python -m py_compile launcher.py gui.py media.py version.py local_director.py assistant_engine.py editor_x_brain.py director_executor.py vision_director.py ai_runtime.py test_eli_planner.py test_eli_scene_windows.py test_eli_transitions.py eli_timeline_ripple.py test_eli_ripple_delete.py eli_v1_context.py test_eli_v1_context.py eli_edit_contract.py test_eli_edit_contract.py test_eli_ui_fit.py
+        run: python -m py_compile launcher.py gui.py media.py version.py local_director.py assistant_engine.py editor_x_brain.py director_executor.py vision_director.py ai_runtime.py test_eli_planner.py test_eli_scene_windows.py test_eli_transitions.py eli_timeline_ripple.py test_eli_ripple_delete.py eli_v1_context.py test_eli_v1_context.py eli_edit_contract.py test_eli_edit_contract.py test_eli_ui_fit.py test_eli_track_chat_vision.py
       - name: Test V1 ripple deletion
         shell: pwsh
         run: python test_eli_ripple_delete.py
@@ -47,6 +47,9 @@ jobs:
       - name: Verify Eli Windows layout and editing wiring
         shell: pwsh
         run: python test_eli_ui_fit.py
+      - name: Verify Eli chat and selected-V1 vision scanning
+        shell: pwsh
+        run: python test_eli_track_chat_vision.py
       - name: Test Eli request parsing and combat-priority montage
         shell: pwsh
         run: |
