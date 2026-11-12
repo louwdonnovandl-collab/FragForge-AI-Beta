@@ -12,6 +12,7 @@ from eli_live_preview import LiveFadeController, ending_fade_gain
 from eli_timeline_ripple import ripple_delete_v1
 from eli_v1_context import current_v1, source_paths, revise_v1_timeline, align_plan_to_v1
 from eli_edit_contract import plan_visible_montage, validate_edit_contract
+from eli_combat_keys import combat_key_markers, build_key_scenes, key_windows
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
@@ -1754,6 +1755,25 @@ class Editor(QMainWindow):
             state['user_markers']=[]
             state['first_combat_output_seconds']=None
             state['planning_warning']=''
+            # Evidence-backed key scenes: 4s, 8s, 12s, 16s as separate
+            # actions arrive, rather than doubling the window each time.
+            vdata=state.get('vision') or {}
+            key_markers=(combat_key_markers(
+                vdata.get('samples',[]),vdata.get('action_sequences',[]),
+                audio_events=vdata.get('audio',{}).get('events',[]))
+                if pending and pending.get('focus_kills') else [])
+            retained=(
+                [(float(c['start']),float(c['end'])) for c in v1_snapshot
+                 if os.path.abspath(str(c['path']))==os.path.abspath(str(source['path']))]
+                if edited_v1 else None)
+            keys=build_key_scenes(
+                key_markers,full_end,
+                target_seconds=target_duration.value() or 60.,
+                speed=playback_speed.value() if pending and pending.get('explicit_speed') else 1.,
+                retained_ranges=retained) if key_markers else []
+            state['combat_key_markers']=key_markers
+            state['combat_key_scenes']=keys
+            state['combat_key_windows']=key_windows(keys)
             if edited_v1:
                 # Subsequent instructions operate on the approved V1 edits,
                 # never the imported source or footage the user deleted.
@@ -1766,7 +1786,7 @@ class Editor(QMainWindow):
                             if sample.get('event')=='combat'
                             and float(sample.get('confidence',0))>=.65
                             and 'time' in sample)
-                    confirmed=sorted(set(confirmed))
+                    confirmed=sorted(set(confirmed + [float(m['time']) for m in key_markers]))
                     state['combat_markers']=confirmed
                     explicit_rate=(playback_speed.value() if pending and pending.get('explicit_speed') else None)
                     prepared,templates=revise_v1_timeline(
@@ -1818,7 +1838,8 @@ class Editor(QMainWindow):
                     temporal=(state.get('vision') or {}).get('action_windows',[]) if focus else []
                     loot_windows=(scene_windows(observations,full_end,event='looting')
                                   if pending and pending.get('focus_loot') else [])
-                    scene_estimates=(merge_evidence_windows(automatic,temporal)
+                    scene_estimates=(merge_evidence_windows(automatic,temporal,
+                                                          state.get('combat_key_windows',[]))
                                      if focus else loot_windows)
                     if focus and scene_estimates and not confirmed:
                         # Use actual positive sample times, never a fabricated
@@ -1827,6 +1848,7 @@ class Editor(QMainWindow):
                             float(x['time']) for x in
                             (state.get('vision') or {}).get('action_sequences',[])
                             if x.get('combat_candidate')]
+                        temporal_hits.extend(float(m['time']) for m in key_markers)
                         for a,b,_ in scene_estimates:
                             times=[float(x['time']) for x in observations
                                    if x.get('event')=='combat'
