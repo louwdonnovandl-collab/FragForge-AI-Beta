@@ -38,6 +38,9 @@ jobs:
       - name: Test V1-aware follow-up editing and playback clock
         shell: pwsh
         run: python test_eli_v1_context.py
+      - name: Test Eli conversational speed parsing
+        shell: pwsh
+        run: python test_eli_speed_commands.py
       - name: Test Eli request parsing and combat-priority montage
         shell: pwsh
         run: |
