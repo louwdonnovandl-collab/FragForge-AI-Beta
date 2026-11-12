@@ -87,3 +87,68 @@ def align_plan_to_v1(segments,v1,explicit_speed=False,preserve_order=True):
         rows.sort(key=lambda row:(row[0],row[2],row[1]))
     return ([(a,b,rate) for _,_,a,b,rate,_ in rows],
             [template for *_,template in rows])
+
+
+def revise_v1_timeline(v1, target_seconds, activity_peaks=(),
+                       focus_action=False, action_markers=(),
+                       explicit_speed=None, prioritize_action=False):
+    """Choose only already-present V1 scenes, retaining their sequence and data.
+
+    Prefer complete scenes. Trim only the final chosen scene to meet an exact
+    target. Scene boundaries and source trims are never expanded. Independent
+    source clips and duplicate source references are supported.
+    """
+    if not v1:return [],[]
+    rate_override = float(explicit_speed) if explicit_speed is not None else None
+    if rate_override is not None and rate_override<=0:
+        raise ValueError('Invalid requested playback speed')
+    candidates=[]
+    for index,c in enumerate(v1):
+        speed=rate_override if rate_override is not None else max(.01,float(c.get('speed',1.)))
+        playback=(float(c['end'])-float(c['start']))/speed
+        if playback<.05:continue
+        action=sum(float(c['start'])<=float(t)<=float(c['end'])
+                   for t in action_markers if True)
+        strength=sum(float(score) for t,score in activity_peaks
+                     if float(c['start'])<=float(t)<float(c['end'])
+                     and os.path.normcase(os.path.abspath(str(c['path'])))
+                     ==os.path.normcase(os.path.abspath(str(v1[0]['path']))))
+        priority=(10000*action if focus_action else 0)+strength
+        candidates.append((index,c,speed,playback,priority,action))
+    available=sum(x[3] for x in candidates)
+    budget=float(target_seconds) if target_seconds and float(target_seconds)>0 else available
+    if budget>available+.08:
+        raise ValueError(
+            f'The current V1 timeline has only {available:.2f}s of footage. '
+            f'Cannot create a {budget:.2f}s edit without restoring deleted scenes.')
+    if budget<=.05:return [],[]
+    # Leave source order unchanged unless the request explicitly asks for
+    # combat at the beginning, and then only reorder whole retained scenes.
+    remaining=budget
+    ranked=sorted(candidates,key=lambda x:(-x[4],x[0])) if budget<available-.08 else candidates
+    chosen=[]
+    for index,c,rate,length,priority,action in ranked:
+        if remaining<=.03:break
+        if length<=remaining+.02:
+            chosen.append((index,c,rate,float(c['start']),float(c['end'])))
+            remaining-=length
+    if remaining>.04:
+        # A single last clip may be trimmed; never fill with footage from
+        # outside the existing manual trims.
+        for index,c,rate,length,priority,action in ranked:
+            if any(row[0]==index for row in chosen):continue
+            amount=min(float(c['end'])-float(c['start']),remaining*rate)
+            if amount>.03:
+                chosen.append((index,c,rate,float(c['start']),float(c['start'])+amount))
+                remaining-=amount/rate
+                break
+    if remaining>.08:
+        raise ValueError('Unable to meet duration using only the existing V1 clips.')
+    if prioritize_action and focus_action:
+        chosen.sort(key=lambda row:(-int(any(float(row[3])<=float(t)<=float(row[4])
+                                               for t in action_markers)),row[0]))
+    else:
+        chosen.sort(key=lambda row:row[0])
+    segments=[(start,end,rate) for _,_,rate,start,end in chosen]
+    templates=[copy.deepcopy(c) for _,c,_,_,_ in chosen]
+    return segments,templates
