@@ -9,6 +9,7 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from media import probe, export_layers, nvenc_available, binary
 from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
 from eli_live_preview import LiveFadeController, ending_fade_gain
+from eli_timeline_ripple import ripple_delete_v1
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
@@ -3269,11 +3270,22 @@ class Editor(QMainWindow):
             d=copy.deepcopy(c);d['at']+=duration(c);self.clips.append(d);self.selected=len(self.clips)-1;self.update_all()
     def delete(self):
         if self.selected is not None and 0<=self.selected<len(self.clips):
-            self.clips.pop(self.selected)
-            self.selected=None
             self.player.pause()
-            self.capture_history()
+            self.live_fades.reset()
+            result=ripple_delete_v1(self.clips,self.selected)
+            self.selected=None
+            if result['ripple']:
+                self.playhead=min(self.total(),max(0.,result['seam']))
+                self.note.setText(
+                    f'V1 Ripple Delete: removed scene, adjusted {result["moved"]} '
+                    'following scenes. Ctrl+Z restores the original timeline.')
+            else:
+                self.note.setText('Removed selected timeline clip. Ctrl+Z to undo.')
             self.update_all()
+            if result['ripple']:
+                self.seek(self.playhead)
+            else:
+                self.sync_timeline_audio()
         elif self.library.hasFocus() and self.library.currentRow()>=0:
             self.remove_library_media()
 
