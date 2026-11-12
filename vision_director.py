@@ -106,7 +106,7 @@ def classify_action_sequence(path,center,end,model,profile="Balanced"):
         'between frames, not a pre-existing blood pool. Set '
         'new_blood_visible=true only if new blood appears in the sequence. '
         'Only set visible_change=true when movement is evidenced between '
-        'these images. For impact, require actual 
+        'these images. For impact, require actual '
         'attacker-to-target interaction. Ordinary walking, aiming without '
         'firing, looting, inventory screens, camera movement, and nearby '
         'zombies alone should be none. Never claim a kill or exact gunshot '
