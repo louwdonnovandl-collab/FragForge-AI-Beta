@@ -1,0 +1,89 @@
+"""Current-V1-aware source selection for Eli Studio.
+
+Every suggested source window is intersected with footage still represented on
+V1. Manual cuts, trims and scene reorders remain constraints on subsequent Eli
+edits. These functions never operate on the original media-library inventory.
+"""
+import copy
+import os
+
+
+EPS=0.00001
+
+
+def clip_seconds(clip):
+    return max(0., (float(clip['end'])-float(clip['start'])) /
+               max(.01, float(clip.get('speed',1.))))
+
+
+def current_v1(clips):
+    return [copy.deepcopy(c) for _,c in sorted(
+        ((i,c) for i,c in enumerate(clips)
+         if c.get('track')=='V1' and c.get('kind')=='video'),
+        key=lambda pair:(float(pair[1].get('at',0.)),pair[0]))]
+
+
+def source_paths(clips):
+    return {os.path.normcase(os.path.abspath(str(c['path']))) for c in clips}
+
+
+def restrict_segments_to_v1(segments, v1):
+    """Intersect source-time spans with the already-retained V1 footage.
+
+    A source interval previously deleted or trimmed away cannot be planned
+    again. Keep distinct manual clip boundaries instead of merging them.
+    """
+    output=[]
+    for c in v1:
+        left=float(c['start']); right=float(c['end'])
+        for a,b,rate in segments:
+            x=max(float(a),left);y=min(float(b),right)
+            if y-x>.30:
+                output.append((x,y,float(rate)))
+    return output
+
+
+def align_plan_to_v1(segments,v1,explicit_speed=False,preserve_order=True):
+    """Return scene fragments and their originating manual V1 templates.
+
+    The plan must be COMPLETELY covered by existing V1 source spans. Planned
+    slices are divided at original manual edit boundaries and retain the
+    original clip's volume, effects, transitions and speed unless explicitly
+    overridden. No source footage is fabricated to satisfy an edit duration.
+    """
+    rows=[]
+    for sequence,(a,b,rate) in enumerate(segments):
+        a=float(a);b=float(b)
+        if b-a<=EPS:continue
+        coverage=[]
+        for index,c in enumerate(v1):
+            left=max(a,float(c['start']))
+            right=min(b,float(c['end']))
+            if right-left>EPS:
+                coverage.append((left,right,index,c))
+        # Do not silently fill or bridge parts the user removed.
+        cursor=a
+        for left,right,_,_ in sorted(coverage,key=lambda p:(p[0],-p[1])):
+            if left>cursor+.03:
+                raise ValueError('Eli tried to select source footage that is absent from V1')
+            cursor=max(cursor,right)
+            if cursor>=b-.03:break
+        if cursor<b-.03:
+            raise ValueError('Eli tried to restore a trimmed or deleted V1 scene')
+        # A source range can occur twice in a timeline (intentional replay).
+        # In that case prefer the earliest saved timeline occurrence; avoid
+        # duplicating it without an explicit user instruction.
+        taken=[]
+        for left,right,index,c in sorted(coverage,key=lambda p:(p[0],p[2])):
+            if any(left>=u-.001 and right<=v+.001 for u,v in taken):
+                continue
+            taken.append((left,right))
+            chosen_rate=float(rate) if explicit_speed else float(c.get('speed',1.))
+            if chosen_rate<=0:raise ValueError('V1 contains an invalid clip speed')
+            rows.append((sequence,index,left,right,chosen_rate,copy.deepcopy(c)))
+    if preserve_order:
+        rows.sort(key=lambda row:(row[1],row[2],row[0]))
+    else:
+        rows.sort(key=lambda row:(row[0],row[2],row[1]))
+    return ([(a,b,rate) for _,_,a,b,rate,_ in rows],
+            [template for *_,template in rows])
