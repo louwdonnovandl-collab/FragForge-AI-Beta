@@ -2355,8 +2355,8 @@ class Editor(QMainWindow):
                 elif hits or temporal_hits or state.get('combat_key_markers'):
                     status.setText(
                         status.text()+f' Eli estimated {len(hits)} still-frame '
-                        f'fight windows, {len(state.get("combat_key_markers",[]))} combat key markers and {len(temporal_hits)} motion-based 
-                        f'action windows; audio transients: '
+                        f'fight windows, {len(state.get("combat_key_markers",[]))} combat key markers '
+                        f'and {len(temporal_hits)} motion-based action windows; audio transients: '
                         f'{len(result.get("audio",{}).get("events",[]))}. '
                         'Review before export.')
                 elif pending and pending.get('focus_kills'):
