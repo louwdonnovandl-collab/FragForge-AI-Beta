@@ -1171,7 +1171,7 @@ class Editor(QMainWindow):
         # Enter from the model selector, dialog buttons, and other controls.
         class EliMessageKeys(QObject):
             def eventFilter(self, obj, event):
-                if obj is request and event.type()==QEvent.KeyPress:
+                if obj in (request,request.viewport()) and event.type()==QEvent.KeyPress:
                     if event.key() in (Qt.Key_Return,Qt.Key_Enter):
                         if event.modifiers() & Qt.ShiftModifier:
                             return False
@@ -1184,6 +1184,7 @@ class Editor(QMainWindow):
                 return False
         self._eli_chat_key_filter=EliMessageKeys(request)
         request.installEventFilter(self._eli_chat_key_filter)
+        request.viewport().installEventFilter(self._eli_chat_key_filter)
 
         def reset():
             state['plan']=None
