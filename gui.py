@@ -289,6 +289,18 @@ class Timeline(QGraphicsView):
         x=138+seconds*self.scale
         if self.playhead_line is not None:self.playhead_line.setLine(x,25,x,48+len(TRACKS)*55+10)
         if self.playhead_handle is not None:self.playhead_handle.setRect(x-4,23,8,8)
+    def follow_playhead(self,seconds):
+        """Scroll just enough to keep the moving playhead in view."""
+        px=138+max(0.,float(seconds))*self.scale
+        where=self.mapFromScene(px,25).x()
+        width=max(1,self.viewport().width())
+        if where>width*.80:
+            self.horizontalScrollBar().setValue(
+                self.horizontalScrollBar().value()+round(where-width*.45))
+        elif seconds>0 and where<width*.12:
+            self.horizontalScrollBar().setValue(
+                max(0,self.horizontalScrollBar().value()+round(where-width*.35)))
+
     def location(self,p):
         t=max(0,(p.x()-138)/self.scale)
         row=int((p.y()-48)//55)
@@ -3410,13 +3422,17 @@ class Editor(QMainWindow):
         self.live_fades.update(self.playhead,True)
         # Avoid rebuilding hundreds of timeline graphics items on every decoded frame.
         # Qt can emit positionChanged many times per second; limit UI refreshes.
-        if ms-self.last_preview_ui_ms>=80 or ms<self.last_preview_ui_ms:
+        if (ms-self.last_preview_ui_ms>=80 or ms<self.last_preview_ui_ms
+                or abs(self.playhead-getattr(self,'_last_drawn_playhead',-1.))>=.10):
             self.last_preview_ui_ms=ms
+            self._last_drawn_playhead=self.playhead
             self.update_playback_ui()
             self.sync_timeline_audio()
     def update_playback_ui(self):
         total=self.total()
         self.timeline.move_playhead(self.playhead)
+        if self.player.playbackState()==QMediaPlayer.PlayingState:
+            self.timeline.follow_playhead(self.playhead)
         stamp=f'{tc(self.playhead)} / {tc(total)}'
         self.time_label.setText(stamp);self.timeline_time.setText(stamp)
         self.scrub.blockSignals(True)
