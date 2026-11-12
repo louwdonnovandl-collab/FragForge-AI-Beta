@@ -133,9 +133,55 @@ def initial_sample_times(end,budget,seed_times=()):
     return sorted(set(round(moment,2) for moment in picks))
 
 
+def retained_sample_times(ranges, limit, seed_times=()):
+    """Spread local vision frames across the SOURCE intervals kept on V1.
+
+    Sampling occurs in compressed retained-footage time, never in discarded
+    footage. Existing activity peaks can bias the scan toward possible action
+    without asserting that a fight occurred.
+    """
+    ranges=sorted((max(0.,float(a)),float(b)) for a,b in ranges
+                  if float(b)-float(a)>=.3)
+    total=sum(b-a for a,b in ranges)
+    limit=max(1,int(limit))
+    if not ranges or total<=0.:return []
+    def at(offset):
+        offset=max(0.,min(total-.001,offset))
+        for a,b in ranges:
+            length=b-a
+            if offset<length:return max(a+.02,min(b-.02,a+offset))
+            offset-=length
+        return ranges[-1][1]-.02
+    # Retain broad coverage across every selected scene, then reserve
+    # remaining slots for likely motion hotspots.
+    broad=max(1,limit//2)
+    stamps=[at((i+.5)*total/broad) for i in range(broad)]
+    for a,b in ranges:
+        if len(stamps)>=limit:break
+        middle=(a+b)/2
+        if all(abs(middle-t)>.35 for t in stamps):stamps.append(middle)
+    for t,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
+        if len(stamps)>=limit:break
+        t=float(t)
+        if any(a<=t<=b for a,b in ranges) and all(abs(t-x)>.4 for x in stamps):
+            stamps.append(t)
+    while len(stamps)<limit:
+        for i in range(limit*2):
+            if len(stamps)>=limit:break
+            t=at((i+.35)*total/(limit*2))
+            if all(abs(t-x)>.2 for x in stamps):
+                stamps.append(t)
+        break
+    return sorted(round(t,3) for t in stamps[:limit])
+
+
+def _in_ranges(t,ranges):
+    return any(float(a)<=float(t)<=float(b) for a,b in ranges)
+
+
 def scan(path,end,model,progress=None,cancel=None,max_frames=None,
          profile="Balanced",seed_times=(),requested_events=("combat",),
-         reference_time=None):
+         reference_time=None,allowed_ranges=None):
     """Use the requested frame budget with motion-guided scene refinement.
 
     Phase 1 covers the timeline and its strongest FFmpeg motion peaks.
@@ -150,7 +196,12 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
     wants_actions='combat' in (requested_events or ())
     sequence_limit=min(8,max(1,budget//16)) if wants_actions and budget>=24 else 0
     still_budget=max(1,budget-3*sequence_limit)
-    broad=initial_sample_times(end,still_budget,seed_times)
+    retained=[(max(0.,float(a)),min(end,float(b)))
+              for a,b in (allowed_ranges or ()) if float(b)>float(a)+.3]
+    relevant_peaks=[(t,score) for t,score in seed_times
+                    if not retained or _in_ranges(t,retained)]
+    broad=(retained_sample_times(retained,max(1,(still_budget+1)//2),relevant_peaks)
+           if retained else initial_sample_times(end,still_budget,seed_times))
     if reference_time is not None:
         # Reserve up to a third of the first pass for the supplied benchmark,
         # while keeping the same overall frame budget and timeline coverage.
@@ -179,22 +230,24 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
              if s.get('event') in desired and float(s.get('confidence',0))>=.60),
             key=lambda s:-float(s.get('confidence',0)))
         anchor_limit=max(1,min(4,remaining//7)) if remaining else 0
-        anchors=([float(reference_time)] if reference_time is not None and anchor_limit else [])
+        anchors=([float(reference_time)] if reference_time is not None and anchor_limit
+                  and (not retained or _in_ranges(reference_time,retained)) else [])
         for item in hits:
             moment=float(item['time'])
-            if all(abs(moment-other)>=12. for other in anchors):
+            if (not retained or _in_ranges(moment,retained)) and all(abs(moment-other)>=12. for other in anchors):
                 anchors.append(moment)
             if len(anchors)>=anchor_limit:break
-        for second,score in sorted(seed_times,key=lambda pair:-float(pair[1])):
+        for second,score in sorted(relevant_peaks,key=lambda pair:-float(pair[1])):
             if len(anchors)>=anchor_limit:break
             moment=float(second)
-            if all(abs(moment-other)>=12. for other in anchors):
+            if (not retained or _in_ranges(moment,retained)) and all(abs(moment-other)>=12. for other in anchors):
                 anchors.append(moment)
         times=[]
         for delta in (-1.5,1.5,-3.,3.,-4.5,4.5,-6.,6.,-7.5,7.5):
             for anchor in anchors:
                 moment=round(max(0.,min(end-.2,anchor+delta)),2)
-                if (all(abs(moment-float(x['time']))>=.55
+                if ((not retained or _in_ranges(moment,retained))
+                        and all(abs(moment-float(x['time']))>=.55
                         for x in coarse['samples'])
                         and all(abs(moment-existing)>=.55 for existing in times)):
                     times.append(moment)
@@ -204,10 +257,13 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
         # and interleaved coverage, never for invented combat labels.
         if len(times)<remaining:
             extras=[float(t) for t,_ in sorted(
-                seed_times,key=lambda pair:-float(pair[1]))]
+                relevant_peaks,key=lambda pair:-float(pair[1]))]
             count=max(1,coarse_uniform_count)
-            extras.extend((i+.25)*end/count for i in range(count))
-            extras.extend((i+.75)*end/count for i in range(count))
+            if retained:
+                extras.extend(retained_sample_times(retained,max(1,remaining*2),relevant_peaks))
+            else:
+                extras.extend((i+.25)*end/count for i in range(count))
+                extras.extend((i+.75)*end/count for i in range(count))
             for moment in extras:
                 moment=round(max(0.,min(end-.2,moment)),2)
                 if (all(abs(moment-float(x['time']))>=.55
@@ -230,7 +286,10 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
         if sequence_limit:
             all_stills=coarse['samples']+fine['samples']
             centers=sequence_centers(
-                all_stills,seed_times,end,sequence_limit,reference_time)
+                all_stills,relevant_peaks,end,sequence_limit,reference_time)
+            if retained:
+                centers=[t for t in centers if _in_ranges(t-.75,retained)
+                         and _in_ranges(t+.75,retained)]
             for i,center in enumerate(centers):
                 if cancel is not None and cancel.is_set():
                     raise RuntimeError('Vision scan cancelled')
@@ -257,7 +316,9 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
         result['max_frames']=budget
         result['failed_frames']+=fine.get('failed_frames',0)
         result['errors']+=fine.get('errors',[])
-        result['scan_method']='motion-guided stills + targeted 3-frame action reasoning'
+        result['scan_method']=('retained V1 motion-guided frames + temporal actions'
+                               if retained else 'motion-guided stills + targeted 3-frame action reasoning')
+        result['retained_v1_ranges']=retained
         result['calibration']=calibration_report(result['samples'],reference_time)
         if progress:
             progress(budget,budget)
