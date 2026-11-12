@@ -193,13 +193,14 @@ class VisualCache(QObject):
 
 class Timeline(QGraphicsView):
     picked=Signal(int,float,str)
+    track_picked=Signal(str)
     dropped=Signal(int,float,str)
     moved=Signal(int,float,str)
     def __init__(self):
         super().__init__();self.setScene(QGraphicsScene(self));self.setMinimumHeight(280)
         self.setAcceptDrops(True);self.setDragMode(QGraphicsView.NoDrag);self.drag_index=None;self.drag_origin=None;self.drag_start_at=0.;self.drag_start_track=None;self.snap_enabled=True
         self.setBackgroundBrush(QColor('#142032'));self.setRenderHint(QPainter.Antialiasing)
-        self.visual_cache=None;self.clips=[];self.selected=None;self.playhead=0;self.scale=30;self.total=30;self.playhead_line=None;self.playhead_handle=None
+        self.visual_cache=None;self.clips=[];self.selected=None;self.selected_indices=set();self.selected_track=None;self.playhead=0;self.scale=30;self.total=30;self.playhead_line=None;self.playhead_handle=None
     def refresh(self):
         sc=self.scene();sc.clear();self.playhead_line=None;self.playhead_handle=None;w=max(1100,self.total*self.scale+180);sc.setSceneRect(0,0,w,max(340,48+len(TRACKS)*55+20))
         # The finest ruler division is 0.1 seconds. Keep labels readable
@@ -225,12 +226,14 @@ class Timeline(QGraphicsView):
                 item.setPos(x+3,7)
         for n,track in enumerate(TRACKS):
             y=48+n*55
-            sc.addRect(0,y,130,51,QPen(QColor('#30445b')),QBrush(QColor('#18263a')))
-            lab=sc.addSimpleText(f'{track}  {LABELS[track]}');lab.setBrush(QColor(FG));lab.setPos(7,y+15)
+            active=(track==self.selected_track)
+            sc.addRect(0,y,130,51,QPen(QColor(CYAN if active else '#30445b'),2 if active else 1),QBrush(QColor('#245063' if active else '#18263a')))
+            lab=sc.addSimpleText(f'{track}  {LABELS[track]}');lab.setBrush(QColor(CYAN if active else FG));lab.setPos(7,y+15)
             sc.addLine(130,y+52,w,y+52,QPen(QColor('#2a3c50')))
         for i,c in enumerate(self.clips):
             y=48+TRACKS.index(c['track'])*55; x=138+c['at']*self.scale; width=max(4,duration(c)*self.scale)
-            rect=sc.addRect(x,y+3,width,45,QPen(QColor(CYAN if self.selected==i else '#6388a5'),2 if self.selected==i else 1),QBrush(QColor(COLORS[c['track']])))
+            highlighted=(self.selected==i or i in self.selected_indices)
+            rect=sc.addRect(x,y+3,width,45,QPen(QColor(CYAN if highlighted else '#6388a5'),3 if highlighted else 1),QBrush(QColor(COLORS[c['track']]).lighter(125) if highlighted else QColor(COLORS[c['track']])))
             rect.setData(0,i)
             # The FFmpeg effect is stored on the incoming V1 clip. Make it
             # visible in the timeline even when source playback shows a cut.
@@ -307,6 +310,10 @@ class Timeline(QGraphicsView):
     def mousePressEvent(self,e):
         p=self.mapToScene(e.position().toPoint());t,track=self.location(p)
         idx=self.hit_clip(t,track)
+        if e.button()==Qt.LeftButton and track is not None and p.x()<130:
+            self.drag_index=None
+            self.track_picked.emit(track)
+            e.accept();return
         if e.button()==Qt.LeftButton and idx>=0:
             self.drag_index=idx;self.drag_origin=t;self.drag_start_at=self.clips[idx]['at'];self.drag_start_track=track
         self.picked.emit(idx,t,track or 'V1')
@@ -466,7 +473,7 @@ class Editor(QMainWindow):
             self.resize(min(1450,max(720,available.width()-24)),
                         min(850,max(560,available.height()-24)))
         else:self.resize(1200,760)
-        self.project_path=None;self._history=[];self._history_index=-1;self._history_busy=False;self._autosave_dirty=False;self.clips=[];self.media=[];self.selected=None;self.track='V1';self.playhead=0;self.active_path=None;self.preview_start=0;self.preview_at=0;self.worker=None;self.pending_seek_ms=None;self.play_when_ready=False
+        self.project_path=None;self._history=[];self._history_index=-1;self._history_busy=False;self._autosave_dirty=False;self.clips=[];self.media=[];self.selected=None;self.track_selection=[];self.track='V1';self.playhead=0;self.active_path=None;self.preview_start=0;self.preview_at=0;self.worker=None;self.pending_seek_ms=None;self.play_when_ready=False
         self._eli_settings_store=QSettings('Eli Studio','Eli Studio')
         try:self._eli_vision_frames=int(self._eli_settings_store.value('vision_frames',64))
         except (ValueError,TypeError):self._eli_vision_frames=64
@@ -741,7 +748,7 @@ class Editor(QMainWindow):
         self.timeline=Timeline();self.timeline.visual_cache=self.visual_cache
         self.timeline.setMinimumHeight(180)
         self.visual_cache.ready.connect(self.on_visual_ready)
-        self.timeline.picked.connect(self.timeline_clicked);self.timeline.dropped.connect(self.timeline_dropped);self.timeline.moved.connect(self.timeline_moved);self.snap_checkbox.toggled.connect(self.set_snap);main.addWidget(self.timeline,5)
+        self.timeline.picked.connect(self.timeline_clicked);self.timeline.track_picked.connect(self.select_timeline_track);self.timeline.dropped.connect(self.timeline_dropped);self.timeline.moved.connect(self.timeline_moved);self.snap_checkbox.toggled.connect(self.set_snap);main.addWidget(self.timeline,5)
         self.note=QLabel('Ready  •  Drag media from the library to the timeline; drag clips to reposition');main.addWidget(self.note)
     def eventFilter(self,obj,event):
         if isinstance(obj,(QSlider,QDoubleSpinBox,QComboBox)) and hasattr(self,'properties_scroll'):
@@ -3119,7 +3126,11 @@ class Editor(QMainWindow):
     def total(self):return max((c['at']+duration(c) for c in self.clips),default=0)
     def update_all(self):
         self.capture_history()
-        total=self.total();self.timeline.clips=self.clips;self.timeline.selected=self.selected;self.timeline.playhead=self.playhead;self.timeline.total=max(30,total);self.timeline.refresh()
+        total=self.total();self.timeline.clips=self.clips;self.timeline.selected=self.selected
+        self.track_selection=[i for i in self.track_selection if 0<=i<len(self.clips) and self.clips[i].get('track')==self.track]
+        self.timeline.selected_indices=set(self.track_selection)
+        self.timeline.selected_track=(self.track if self.track_selection else None)
+        self.timeline.playhead=self.playhead;self.timeline.total=max(30,total);self.timeline.refresh()
         self.time_label.setText(f'{tc(self.playhead)} / {tc(total)}');self.timeline_time.setText(f'{tc(self.playhead)} / {tc(total)}')
         self.scrub.blockSignals(True);self.scrub.setValue(round(10000*self.playhead/max(total,.001)));self.scrub.blockSignals(False)
         if self.selected is not None and self.selected<len(self.clips):
@@ -3153,7 +3164,9 @@ class Editor(QMainWindow):
             self.clip_volume_label.setText(f'{self.clip_volume.value()}% — ' + ('Muted' if self.clip_volume.value()==0 else 'Original' if self.clip_volume.value()==100 else 'Adjusted'))
 
         else:
-            self.clip_name.setText('No clip selected')
+            if self.track_selection:
+                self.clip_name.setText(f'{self.track} — {len(self.track_selection)} clips selected (track-wide highlight)')
+            else:self.clip_name.setText('No clip selected')
             self.overlay_opacity.setEnabled(False)
             self.overlay_opacity_label.setText('Select a V3 effect to adjust visibility')
     def on_visual_ready(self,path):
@@ -3267,11 +3280,24 @@ class Editor(QMainWindow):
         self.insert_source(src,track,t)
         self.note.setText(f'Inserted {Path(src["path"]).name} on {track} at {tc(t)}')
     def timeline_moved(self,index,t,track):
+        self.track_selection=[]
         self.selected=index;self.track=track
         self.track_choice.blockSignals(True);self.track_choice.setCurrentIndex(TRACKS.index(track));self.track_choice.blockSignals(False)
         self.update_all()
         self.note.setText(f'Moved clip to {track} at {tc(t)}')
+    def select_timeline_track(self,track):
+        """Highlight every clip on a row without deleting or modifying them."""
+        self.track=track
+        self.track_selection=[i for i,c in enumerate(self.clips) if c.get('track')==track]
+        self.selected=None
+        self.track_choice.blockSignals(True)
+        self.track_choice.setCurrentIndex(TRACKS.index(track))
+        self.track_choice.blockSignals(False)
+        self.update_all()
+        self.note.setText(f'{track}: highlighted {len(self.track_selection)} clips. Click one clip for individual editing.')
+
     def timeline_clicked(self,index,t,track):
+        self.track_selection=[]
         self.selected=index if index>=0 else None;self.track=track;self.track_choice.setCurrentIndex(TRACKS.index(track));
         if index<0:self.seek(t)
         else:
