@@ -13,6 +13,7 @@ from eli_timeline_ripple import ripple_delete_v1
 from eli_v1_context import current_v1, source_paths, revise_v1_timeline, align_plan_to_v1
 from eli_edit_contract import plan_visible_montage, validate_edit_contract
 from eli_combat_keys import combat_key_markers, build_key_scenes, key_windows
+from eli_combat_selection import select_combat_montage
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
@@ -1663,6 +1664,9 @@ class Editor(QMainWindow):
                     'vision_enabled':vision_enabled.isChecked(),
                     'vision_model':vision_model.currentText() if vision_enabled.isChecked() else 'not scanned',
                     'vision_samples':len(vision.get('samples',[])),
+                    'combat_key_markers':state.get('combat_key_markers',[]),
+                    'combat_key_scenes':state.get('combat_key_scenes',[]),
+                    'combat_evidence_plan':state.get('combat_evidence_plan'),
                     'action_sequences':vision.get('action_sequences',[]),
                     'action_windows':vision.get('action_windows',[]),
                     'action_frame_attempts':vision.get('action_frame_attempts',0),
@@ -2019,6 +2023,46 @@ class Editor(QMainWindow):
                     windows=[(a,b) for a,b,_ in segments]
                 else:
                     windows=choose_highlights(cuts,start,end,int(count.currentText()),length.value())
+            # If there is actual temporal action evidence, preserve those
+            # long, uninterrupted key scenes BEFORE generic motion fillers.
+            # A 34-second fight is not subdivided just to make equal clips.
+            state['combat_evidence_plan']=None
+            if (pending and pending.get('focus_kills')
+                    and not pending.get('combat_only')
+                    and float(target_duration.value())>0
+                    and state.get('combat_key_scenes')
+                    and (not edited_v1 or len(original_v1_paths)==1)):
+                try:
+                    if edited_v1:
+                        available=[(float(c['start']),float(c['end']),1.)
+                                   for c in v1_snapshot]
+                    else:
+                        available=smart_pacing_segments(
+                            0.,full_end,cuts.get('stagnant',[]),[])
+                    rate=(playback_speed.value() if pending.get('explicit_speed')
+                          else 1.)
+                    candidate,report=select_combat_montage(
+                        available,state['combat_key_scenes'],
+                        cuts.get('activity_peaks',[]),
+                        target_duration.value()-runtime(state.get('intro') or []),
+                        rate)
+                    if (not pending.get('explicit_crossfade')
+                            or len(candidate)>=2):
+                        if edited_v1:
+                            candidate,templates=align_plan_to_v1(
+                                candidate,v1_snapshot,explicit_speed=True,
+                                preserve_order=True)
+                            state['v1_templates']=templates
+                        state['segments']=candidate
+                        state['intro']=[]
+                        windows=[(a,b) for a,b,_ in candidate]
+                        state['combat_evidence_plan']=report
+                        state['planning_warning']=(
+                            f'Eli preserved {report["action_seconds"]:.1f}s of '
+                            'estimated combat-key scenes; other footage remains '
+                            'labelled supporting gameplay.')
+                except ValueError as exc:
+                    state['combat_evidence_plan_error']=str(exc)
             # A requested transition montage must contain actual, separated
             # shots. One long source trim is not an edited montage.
             if (pending and pending.get('explicit_crossfade') and
@@ -2026,7 +2070,8 @@ class Editor(QMainWindow):
                     (len(windows)<2 or not any(
                         float(next_a)-float(prev_b)>=1.
                         for (_,prev_b),(next_a,_) in zip(windows,windows[1:])))
-                    and not state.get('planning_warning','').startswith('Eli could not')):
+                    and not state.get('planning_warning','').startswith('Eli could not')
+                    and not state.get('combat_evidence_plan')):
                 try:
                     requested_rate=(playback_speed.value()
                                     if pending.get('explicit_speed') else 1.)
@@ -2288,10 +2333,10 @@ class Editor(QMainWindow):
                         'Combat-only was explicitly requested but no temporal '
                         'or repeated-frame fighting evidence was found. '
                         'Provide timestamps or permit supporting gameplay.')
-                elif hits or temporal_hits:
+                elif hits or temporal_hits or state.get('combat_key_markers'):
                     status.setText(
                         status.text()+f' Eli estimated {len(hits)} still-frame '
-                        f'fight windows and {len(temporal_hits)} motion-based '
+                        f'fight windows, {len(state.get("combat_key_markers",[]))} combat key markers and {len(temporal_hits)} motion-based 
                         f'action windows; audio transients: '
                         f'{len(result.get("audio",{}).get("events",[]))}. '
                         'Review before export.')
