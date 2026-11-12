@@ -202,7 +202,7 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
                     if not retained or _in_ranges(t,retained)]
     broad=(retained_sample_times(retained,max(1,(still_budget+1)//2),relevant_peaks)
            if retained else initial_sample_times(end,still_budget,seed_times))
-    if reference_time is not None:
+    if reference_time is not None and (not retained or _in_ranges(reference_time,retained)):
         # Reserve up to a third of the first pass for the supplied benchmark,
         # while keeping the same overall frame budget and timeline coverage.
         coarse_limit=max(1,(still_budget+1)//2)
@@ -210,9 +210,12 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
         reference_samples=calibration_sample_times(
             reference_time,end,reference_quota)
         remaining_coarse=max(0,coarse_limit-len(reference_samples))
-        broad_rest=initial_sample_times(
-            end,max(1,2*remaining_coarse),seed_times
-        )[:remaining_coarse] if remaining_coarse else []
+        broad_rest=(retained_sample_times(retained,max(1,remaining_coarse),relevant_peaks)
+                    if retained else initial_sample_times(
+                        end,max(1,2*remaining_coarse),seed_times
+                    )[:remaining_coarse]) if remaining_coarse else []
+        reference_samples=[t for t in reference_samples
+                           if not retained or _in_ranges(t,retained)]
         broad=sorted(set(reference_samples+broad_rest))
     coarse_uniform_count=max(1,len(broad))
     remaining=max(0,still_budget-len(broad))
@@ -266,7 +269,8 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
                 extras.extend((i+.75)*end/count for i in range(count))
             for moment in extras:
                 moment=round(max(0.,min(end-.2,moment)),2)
-                if (all(abs(moment-float(x['time']))>=.55
+                if ((not retained or _in_ranges(moment,retained))
+                        and all(abs(moment-float(x['time']))>=.55
                         for x in coarse['samples'])
                         and all(abs(moment-existing)>=.55 for existing in times)):
                     times.append(moment)
