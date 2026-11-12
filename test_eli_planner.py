@@ -99,7 +99,10 @@ print('PASS: Eli vision detail is saved in Settings and used in analysis')
 # A recognized short montage may be replanned from cached evidence; 120s
 # cannot silently override a user-selected shorter duration.
 source_gui=Path(__file__).with_name('gui.py').read_text(encoding='utf-8')
-assert "reference_time=reference)" in source_gui
+# Vision scanning now passes both the calibration timestamp and the V1-only
+# scan ranges, so reference_time is followed by a comma, not a closing ')'.
+assert "reference_time=reference," in source_gui
+assert "allowed_ranges=current_ranges)" in source_gui
 assert "target_duration.setValue(seconds)" in source_gui
 assert "analyzed(cuts)  # Replan using cached evidence" in source_gui
 assert "status.setWordWrap(True)" in source_gui
