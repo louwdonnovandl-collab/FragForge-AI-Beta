@@ -9,6 +9,7 @@ from eli_action_reasoning import parse_sequence_reply,sequence_centers
 from pathlib import Path
 from assistant_engine import interpret_request
 import ast
+import json
 
 # Combat analysis must be enabled when users describe ACTIONS directly,
 # even if they never use the literal word "combat".
@@ -19,23 +20,27 @@ for phrase in (
 ):
     assert interpret_request(phrase)['focus_kills'],phrase
 
+# Always encode synthetic model replies through json.dumps. JSON requires
+# 0.95 rather than Python-style .95, which previously broke the CI fixture.
+def model_response(**fields):
+    return {'response':json.dumps(fields)}
+
 # Small vision models can emit explicit string booleans and percentages.
-attack=parse_sequence_reply({'response':'{"action":"swinging_weapon",'
-    '"confidence":"84%","visible_change":"true",'
-    '"attacker_target_interaction":"yes"}'},
-    15.,[14.25,15.,15.75])
+attack=parse_sequence_reply(model_response(
+    action='swinging_weapon',confidence='84%',visible_change='true',
+    attacker_target_interaction='yes'),15.,[14.25,15.,15.75])
 assert attack['action']=='weapon_swing' and attack['combat_candidate']
 assert abs(attack['confidence']-.84)<.001
 
 # A still blood pool is not enough. Newly appearing splatter across multiple
 # frames is a possible action marker, not a verified hit.
-blood=parse_sequence_reply({'response':'{"action":"new_blood",'
-    '"confidence":82,"visible_change":true,"new_blood_visible":true}'},
-    18.,[17.25,18.,18.75])
+blood=parse_sequence_reply(model_response(
+    action='new_blood',confidence=82,visible_change=True,
+    new_blood_visible=True),18.,[17.25,18.,18.75])
 assert blood['action']=='blood_change' and blood['combat_candidate']
-fake=parse_sequence_reply({'response':'{"action":"new_blood",'
-    '"confidence":.95,"visible_change":true,"new_blood_visible":false}'},
-    20.,[19.25,20.,20.75])
+fake=parse_sequence_reply(model_response(
+    action='new_blood',confidence=0.95,visible_change=True,
+    new_blood_visible=False),20.,[19.25,20.,20.75])
 assert fake['action']=='none' and not fake['combat_candidate']
 
 # A follow-up motion sample is scheduled within the additive four-second
