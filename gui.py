@@ -1033,6 +1033,11 @@ class Editor(QMainWindow):
         chat=QPlainTextEdit();chat.setReadOnly(True)
         chat.setPlainText('Eli: Welcome to Eli Studio!')
         right.addWidget(chat,4)
+        instruction_check=QLabel('✓ Edit instructions understood')
+        instruction_check.setStyleSheet(
+            'color:#50d08a; font-size:12px; font-weight:600; padding:2px 5px;')
+        instruction_check.hide()
+        right.addWidget(instruction_check)
         thinking_status=QLabel('')
         thinking_status.setWordWrap(True)
         thinking_status.setStyleSheet('color:#84909d; font-size:12px; font-style:italic; padding:4px;')
@@ -1100,6 +1105,7 @@ class Editor(QMainWindow):
             state['plan_text']=self._assistant_request
             preview.setPlainText(describe_plan(plan))
             chat.appendPlainText('Eli: '+reply+'\n')
+            instruction_check.setVisible(bool(state.get('plan')))
             reply_label.setText(reply)
             launch.setEnabled(True)
             send.setEnabled(True)
@@ -1108,6 +1114,7 @@ class Editor(QMainWindow):
             if not value:
                 QMessageBox.information(dlg,'Eli','Tell me what you want edited first.');return
             self._assistant_request=value
+            instruction_check.hide()
             chat.appendPlainText('You: '+value)
             # Preserve chat history and pending edit instruction, then make
             # the entry box immediately ready for the next message.
@@ -1129,7 +1136,8 @@ class Editor(QMainWindow):
                     if parsed.get('explicit_crossfade') else 'Transitions: unchanged',
                     'Game audio: preserved'
                 ]
-                chat.appendPlainText('Eli edit settings: '+' | '.join(summary)+'\n')
+                state['confirmed_summary']=' | '.join(summary)
+                instruction_check.setToolTip(state['confirmed_summary'])
                 launch.setEnabled(True)
             chat_mode=True
             # Preserve the last valid edit plan while processing follow-up chat.
@@ -1138,6 +1146,7 @@ class Editor(QMainWindow):
             if not state['models']:
                 if chat_mode:
                     chat.appendPlainText('Eli: My local AI is offline. Your edit instructions are saved; click Prepare Edit to start, or Connect to chat.\n')
+                    instruction_check.setVisible(bool(state.get('plan')))
                     reply_label.setText('Connect my local AI so we can chat!')
                     send.setEnabled(True)
                 else:
@@ -1159,6 +1168,7 @@ class Editor(QMainWindow):
                 thinking_status.setText('Instructions recorded · click Prepare Edit to scan footage.')
                 if plan is None:
                     chat.appendPlainText('Eli: '+reply+'\n')
+                    instruction_check.setVisible(bool(state.get('plan')))
                     reply_label.setText(reply)
                     send.setEnabled(True)
                 else:
