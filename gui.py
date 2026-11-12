@@ -2054,7 +2054,8 @@ class Editor(QMainWindow):
                                 preserve_order=True)
                             state['v1_templates']=templates
                         state['segments']=candidate
-                        state['intro']=[]
+                        # Keep an explicitly requested intro in the duration
+                        # calculation; the candidate budget already excludes it.
                         windows=[(a,b) for a,b,_ in candidate]
                         state['combat_evidence_plan']=report
                         state['planning_warning']=(
