@@ -1064,6 +1064,17 @@ class Editor(QMainWindow):
                 state['plan']=interpret_request(value)
                 state['plan_text']=value
                 preview.setPlainText(describe_plan(state['plan']))
+                # Confirm interpreted constraints independently of Ollama chat.
+                # A conversational reply must not silently omit explicit speed.
+                parsed=state['plan']
+                summary=[
+                    f"Target: {parsed['target_seconds']:g}s" if parsed['target_seconds'] else 'Target: automatic',
+                    f"Speed: {parsed['requested_speed']:g}×" if parsed.get('explicit_speed') else 'Speed: existing/automatic',
+                    f"Transitions: {parsed['transition_style']} {parsed['crossfade_seconds']:g}s"
+                    if parsed.get('explicit_crossfade') else 'Transitions: unchanged',
+                    'Game audio: preserved'
+                ]
+                chat.appendPlainText('Eli edit settings: '+' | '.join(summary)+'\\n')
                 launch.setEnabled(True)
             chat_mode=True
             # Preserve the last valid edit plan while processing follow-up chat.
