@@ -1711,6 +1711,7 @@ class Editor(QMainWindow):
                     state['segments']=[];state['intro']=[];windows=[]
                     state['v1_templates']=[]
                     state['planning_warning']=str(exc)
+                    status.setText(state['planning_warning'])
             elif mode.currentIndex()==0 and target_duration.value()<=0:
                 windows=choose_highlights(cuts,start,end,3,5.)
             elif mode.currentIndex()==2 and target_duration.value()<=0:
@@ -1926,7 +1927,7 @@ class Editor(QMainWindow):
                 release_ai_job('analysis');cancel_button.setEnabled(False);heartbeat.stop()
                 return
             state['windows']=windows;results.clear()
-            if pending and pending.get('combat_first') and confirmed and windows:
+            if not edited_v1 and pending and pending.get('combat_first') and confirmed and windows:
                 maximum=float(pending.get('max_noncombat_opening_seconds',3))
                 # Move estimated combat to the front instead of rejecting a
                 # valid montage because its first event was later in the source.
