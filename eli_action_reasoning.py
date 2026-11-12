@@ -18,11 +18,36 @@ ACTION_ALIASES={
     'bat_swing':'weapon_swing','axe_swing':'weapon_swing',
     'pushing':'shove','push':'shove','grapple':'shove',
     'hit':'impact','contact':'impact','collision':'impact',
+    'weapon_attack':'weapon_swing','swinging_weapon':'weapon_swing',
+    'swinging_an_object':'weapon_swing','bat_attack':'weapon_swing',
+    'shoot':'gunfire','gun_shot':'gunfire','shooting_gun':'gunfire',
+    'exploding':'explosion','explosive_blast':'explosion',
+    'splatter':'blood_change','new_blood_splatter':'blood_change',
     'blast':'explosion','detonation':'explosion',
     'new_blood':'blood_change','blood_splatter_change':'blood_change',
     'unknown':'none','other':'none','walking':'none',
 }
 ACTIVE_ACTIONS=set(ACTION_TYPES)-{'none'}
+
+
+def _model_bool(value):
+    """Accept JSON booleans and explicit true/false strings from small VLMs."""
+    if isinstance(value,bool):
+        return value
+    if isinstance(value,str):
+        return value.strip().lower() in ('true','yes','1')
+    return value == 1
+
+
+def _model_confidence(value):
+    """Normalize 0..1 or 0..100 numerical confidence; reject unknown values."""
+    try:
+        number=float(str(value).strip().rstrip('%'))
+        if number>1. and number<=100.:
+            number/=100.
+        return max(0.,min(1.,number))
+    except (TypeError,ValueError):
+        return 0.
 
 
 def parse_sequence_reply(response, center, frame_times):
@@ -38,19 +63,18 @@ def parse_sequence_reply(response, center, frame_times):
         payload=json.loads(match.group(0))
     if not isinstance(payload,dict):
         raise ValueError('Vision model returned invalid action data')
-    name=str(payload.get('action','none')).strip().lower().replace(' ','_').replace('-','_')
+    name=str(payload.get('action') or payload.get('detected_action') or 'none').strip().lower().replace(' ','_').replace('-','_')
     name=ACTION_ALIASES.get(name,name)
     if name not in ACTION_TYPES:
         name='none'
-    try:confidence=max(0.,min(1.,float(payload.get('confidence',0))))
-    except (TypeError,ValueError):confidence=0.
+    confidence=_model_confidence(payload.get('confidence',0))
     # An isolated screenshot is not an action. A temporal answer must explicitly
     # report a CHANGE across the ordered frames; the model may be uncertain.
-    movement=payload.get('visible_change',False) is True
+    movement=_model_bool(payload.get('visible_change',False))
     # An impact is not specific combat unless the model explicitly reports
     # interaction between a character/weapon and a target across the frames.
-    interaction=payload.get('attacker_target_interaction',False) is True
-    new_blood=payload.get('new_blood_visible',False) is True
+    interaction=_model_bool(payload.get('attacker_target_interaction',False))
+    new_blood=_model_bool(payload.get('new_blood_visible',False))
     if (not movement or (name=='impact' and not interaction)
             or (name=='blood_change' and not new_blood)):
         name='none'
