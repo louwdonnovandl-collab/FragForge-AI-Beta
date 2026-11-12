@@ -49,7 +49,18 @@ def interpret_request(text):
     intro_alt = re.search(r'(\d{1,2})\s*(?:seconds?|secs?|s\b)[^\n.]{0,40}?\bintro\b', t)
     intro_seconds = min(20, int((intro or intro_alt).group(1))) if (intro or intro_alt) else (10 if re.search(r'\bintro\b', t) else 0)
     target_seconds = extract_output_duration(text)
-    speed_match = re.search(r'\b(?:sped\s*up|speed(?:\s*up)?|playback)(?:\s*(?:to|at|by))?\s*(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)?', t) or re.search(r'\b(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)', t)
+    # Match all familiar multiplier expressions: "speed x2", "speed 2x",
+    # "2x speed", "playback at 2 times" and "x2 playback". A bare
+    # duration like "60 seconds" must never be mistaken for a speed.
+    speed_match = (
+        re.search(r'\b(?:sped\s*up|speed(?:\s*up)?|playback(?:\s*speed)?)'
+                  r'(?:\s*(?:to|at|by|of|:|=))?\s*x?\s*(\d+(?:[.,]\d+)?)'
+                  r'\s*(?:x\b|times\b)?', t)
+        or re.search(r'\b(\d+(?:[.,]\d+)?)\s*(?:x\b|times\b)'
+                     r'(?:\s+(?:speed|playback))?', t)
+        or re.search(r'\bx\s*(\d+(?:[.,]\d+)?)'
+                     r'(?:\s+(?:speed|playback))?\b', t)
+    )
     requested_speed = max(.25,min(8.,float(speed_match.group(1).replace(',','.')))) if speed_match else 1.
     highlight = bool(re.search(r'\b(highlights?|montage|shorts?|reels?|tiktok|clips?)\b',t))
     focus_kills = bool(re.search(r'\b(kills?|zombies?|takedowns?|combat|fights?|fighting|multikills?)\b',t))
