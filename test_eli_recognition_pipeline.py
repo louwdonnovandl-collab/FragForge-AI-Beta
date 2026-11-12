@@ -7,7 +7,17 @@ from eli_combat_selection import select_combat_montage
 from eli_combat_keys import combat_key_markers,build_key_scenes
 from eli_action_reasoning import parse_sequence_reply,sequence_centers
 from pathlib import Path
+from assistant_engine import interpret_request
 import ast
+
+# Combat analysis must be enabled when users describe ACTIONS directly,
+# even if they never use the literal word "combat".
+for phrase in (
+    'Make a montage of weapon swings and impacts',
+    'Find punching and kicking scenes',
+    'Find gunfire, explosions and blood splatters',
+):
+    assert interpret_request(phrase)['focus_kills'],phrase
 
 # Small vision models can emit explicit string booleans and percentages.
 attack=parse_sequence_reply({'response':'{"action":"swinging_weapon",'
