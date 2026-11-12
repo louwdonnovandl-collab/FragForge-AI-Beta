@@ -1,3 +1,3 @@
-VERSION = '1.0.37'
+VERSION = '1.0.38'
 DISPLAY_NAME = f'Eli Studio v{VERSION}'
-ARTIFACT_NAME = 'Eli_Studio_v1.0.37'
+ARTIFACT_NAME = 'Eli_Studio_v1.0.38'
