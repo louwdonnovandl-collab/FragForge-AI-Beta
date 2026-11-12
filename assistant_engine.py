@@ -116,9 +116,27 @@ def interpret_request(text):
     )
     combat_opening=bool(focus_kills and any(
         re.search(pattern,t) for pattern in opening_patterns))
-    transitions_explicit=bool(re.search(
+    # "add fades" means scene-to-scene crossfades in a montage. A request
+    # solely for an ending fade remains independent (not a scene crossfade).
+    transition_keyword=bool(re.search(
         r'\b(?:cross[- ]?fades?|dissolves?|transitions?|ripple|turbulence|'
         r'wipes?|slides?)\b',t))
+    scene_fades=bool(re.search(
+        r'\b(?:add|apply|use|insert|include|make|put|smooth)\b'
+        r'[^.!?\n]{0,55}?\bfades?\b'
+        r'|\bfades?\b[^.!?\n]{0,55}?\b(?:between|scenes?|clips?|cuts?)\b'
+        r'|\b(?:between|at|on)\s+(?:every\s+|each\s+|the\s+)?'
+        r'(?:scenes?|clips?|cuts?)\s+fades?\b',t))
+    end_only=bool(re.search(
+        r'\b(?:final|ending|end)\s+fades?\b'
+        r'|\bfade\s+(?:out\s+)?(?:the\s+)?video\s+to\s+black\b'
+        r'|\bfade\s+to\s+black\b',t))
+    negative_fades=bool(re.search(
+        r"\b(?:no|without|avoid|skip|never|don't|do not)\s+"
+        r"(?:(?:add|apply|use|insert|any|scene|smooth|cross)\s+){0,3}"
+        r"(?:fades?|cross[- ]?fades?|transitions?)\b",t))
+    transitions_explicit=(transition_keyword or (scene_fades and not
+                          (end_only and not re.search(r'\b(?:between|scenes?|cuts?)\b',t)))) and not negative_fades
     style=('radial' if 'ripple' in t else
            'pixelize' if 'turbulence' in t else 'fade')
     seconds=0.5
