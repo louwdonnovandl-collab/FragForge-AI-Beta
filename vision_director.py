@@ -200,7 +200,9 @@ def scan(path,end,model,progress=None,cancel=None,max_frames=None,
     # Reserve actual image slots for 3-frame action comparisons; do not
     # increase total scanned images beyond the user-selected frame budget.
     wants_actions='combat' in (requested_events or ())
-    sequence_limit=min(8,max(1,budget//16)) if wants_actions and budget>=24 else 0
+    # Prefer temporal action evidence over isolated stills for combat-focused
+    # requests. 96 frame budget: 12 three-frame comparisons + 60 stills.
+    sequence_limit=min(20,max(2,budget//8)) if wants_actions and budget>=24 else 0
     still_budget=max(1,budget-3*sequence_limit)
     retained=[(max(0.,float(a)),min(end,float(b)))
               for a,b in (allowed_ranges or ()) if float(b)>float(a)+.3]
