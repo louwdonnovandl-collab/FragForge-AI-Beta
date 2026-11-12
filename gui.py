@@ -2319,8 +2319,26 @@ class Editor(QMainWindow):
                 state['markers']=build_markers(
                     result.get('samples',[]),result.get('audio',{}).get('events',[]),
                     action_sequences=result.get('action_sequences',[]))
-                markers_button.setEnabled(bool(state['markers']))
                 analyzed(cuts)
+                # Present the computed combat keys as reviewable estimates,
+                # even if their evidence came from paired stills rather than
+                # a complete temporal motion sequence. No silent markers.
+                for marker in state.get('combat_key_markers',[]):
+                    if any(abs(float(m.get('time',-100))-float(marker['time']))<.25
+                           and str(m.get('event','')).endswith(str(marker['kind']))
+                           for m in state['markers']):
+                        continue
+                    state['markers'].append({
+                        'time':float(marker['time']),
+                        'event':'combat_key_'+str(marker['kind']),
+                        'confidence':float(marker['confidence']),
+                        'source':str(marker.get('source','vision')),
+                        'verified':bool(marker.get('verified',False)),
+                        'audio_correlated':bool(marker.get('audio_support',False)),
+                        'note':'Estimated combat key marker; review gameplay before trusting the event'
+                    })
+                state['markers'].sort(key=lambda marker:float(marker.get('time',0)))
+                markers_button.setEnabled(bool(state['markers']))
                 hits=combat_windows(result['samples'],full_end)
                 if result.get('audio'):status.setToolTip(result['audio'].get('status',''))
                 if result.get('failed_frames'):status.setToolTip((status.toolTip()+'\n' if status.toolTip() else '')+f'{result["failed_frames"]} vision frames failed classification')
@@ -2343,9 +2361,13 @@ class Editor(QMainWindow):
                         'Review before export.')
                 elif pending and pending.get('focus_kills'):
                     status.setText(
-                        status.text()+' No specific fighting motion was recognized. '
-                        'A prioritized general gameplay edit is still available; '
-                        'activity peaks are unverified.')
+                        status.text()+f' No verified fighting motion: '
+                        f'{len(result.get("action_sequences",[]))} temporal comparisons, '
+                        f'{len(result.get("samples",[]))} classified stills, '
+                        f'{result.get("failed_frames",0)} failed stills and '
+                        f'{len(result.get("action_errors",[]))} action errors. '
+                        'General motion is NOT a combat marker. Review the '
+                        'sample timestamps or provide a known combat example.')
                 # Keep completion visible, including cases where Apply is blocked.
                 analysis_bar.setValue(100)
                 editor_tabs.setCurrentWidget(scroll)
