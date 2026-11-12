@@ -10,6 +10,7 @@ from media import probe, export_layers, nvenc_available, binary
 from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
 from eli_live_preview import LiveFadeController, ending_fade_gain
 from eli_timeline_ripple import ripple_delete_v1
+from eli_v1_context import current_v1, source_paths, revise_v1_timeline
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
@@ -474,9 +475,13 @@ class Editor(QMainWindow):
         self.audio_sync_timer=QTimer(self)
         self.audio_sync_timer.setInterval(100)
         self.audio_sync_timer.timeout.connect(self.sync_timeline_audio)
+        self.audio_sync_timer.timeout.connect(self.update_timeline_clock)
         self.audio_sync_timer.start()
         self.sfx_preview=QSoundEffect(self);self.sfx_preview.setVolume(.65)
         self.last_preview_ui_ms=-1000
+        self._clock_last_source_ms=None
+        self._clock_last_source_change=time.monotonic()
+        self._clock_timeline_anchor=0.
         self.build_ui();self.update_all();self.capture_history()
         self.autosave_timer=QTimer(self);self.autosave_timer.setInterval(120000)
         self.autosave_timer.timeout.connect(self.autosave_project);self.autosave_timer.start()
@@ -1167,6 +1172,12 @@ class Editor(QMainWindow):
         if not videos:
             QMessageBox.information(self,'Auto Edit','Place a gameplay video on V1 first.');return
         source=videos[0]
+        v1_snapshot=current_v1(self.clips)
+        original_library=next((m for m in self.media if os.path.abspath(str(m['path']))==os.path.abspath(str(source['path'])) and m.get('kind')=='video'),source)
+        # One unmodified import uses normal source analysis. An edited V1
+        # montage must instead be the source of truth for follow-up requests.
+        edited_v1=(len(v1_snapshot)>1 or abs(float(source['start'])-float(original_library.get('start',0)))>.01 or abs(float(source['end'])-float(original_library.get('end',source['end'])))>.01)
+        original_v1_paths=source_paths(v1_snapshot)
         # Parent the assistant's working window to its chat, not to the main editor.
         # A modeless child avoids a nested event loop that previously blocked the chat.
         parent_dialog=getattr(self,'_director_dialog',None) if from_assistant else None
@@ -1280,7 +1291,9 @@ class Editor(QMainWindow):
         settings_layout=collapsible_section('01  Edit length & playback', True)
         settings_layout.addWidget(QLabel('Analyze scene changes and suggest a gaming montage or full-length edit.\n'
                                 'Offline visual activity detection: no reliable kill, looting, or walking recognition yet.'))
-        settings_layout.addWidget(QLabel('Source: '+Path(source['path']).name))
+        settings_layout.addWidget(QLabel('Editing: '+(f'CURRENT V1 timeline ({len(v1_snapshot)} retained scenes)' if edited_v1 else Path(source['path']).name)))
+        if edited_v1:
+            settings_layout.addWidget(QLabel('Eli will reuse only footage still on V1. Deleted segments stay deleted; existing audio and overlays are preserved.'))
         mode=QComboBox();mode.addItems(['15-second highlight','Custom highlight montage','Full-length edit (up to 1 hour)'])
         settings_layout.addWidget(QLabel('Edit duration preset'));settings_layout.addWidget(mode)
         count=QComboBox();count.addItems(['3','5','8','12']);count.setCurrentText('5')
@@ -1858,6 +1871,32 @@ class Editor(QMainWindow):
                     windows=[(a,b) for a,b,_ in segments]
                 else:
                     windows=choose_highlights(cuts,start,end,int(count.currentText()),length.value())
+            # Manual V1 is authoritative on subsequent edits. No source-based
+            # plan can restore footage the user has already discarded.
+            if edited_v1:
+                try:
+                    if len(original_v1_paths)>1:
+                        # Scanner evidence comes from one source; we can still
+                        # keep other V1 sources in their existing sequence.
+                        status.setText('Editing multiple retained V1 sources; source-specific event confidence is limited.')
+                    explicit_rate=(playback_speed.value() if pending and pending.get('explicit_speed') else None)
+                    prepared,templates=revise_v1_timeline(
+                        v1_snapshot,float(target_duration.value()),
+                        cuts.get('activity_peaks',()),
+                        focus_action=bool(pending and pending.get('focus_kills')),
+                        action_markers=confirmed,
+                        explicit_speed=explicit_rate,
+                        prioritize_action=bool(pending and pending.get('combat_first')))
+                    state['segments']=prepared
+                    state['v1_templates']=templates
+                    state['intro']=[]
+                    windows=[(a,b) for a,b,_ in prepared]
+                    state['longform_report']=None
+                    state['planning_warning']='Editing current V1 only; discarded scenes are excluded.'
+                except ValueError as exc:
+                    state['segments']=[];state['intro']=[];windows=[]
+                    state['v1_templates']=[]
+                    state['planning_warning']=str(exc)
             # Reject an inconsistent plan before enabling Apply Edit.
             requested_seconds=float(target_duration.value())
             candidate_seconds=runtime(state['segments'])+runtime(state['intro']) if state['segments'] else sum(b-a for a,b in windows)
@@ -2210,12 +2249,19 @@ class Editor(QMainWindow):
                 except Exception as exc:
                     QMessageBox.warning(dlg,'Music unavailable','Cannot apply requested soundtrack: '+str(exc));return
             previous_clips=copy.deepcopy(self.clips)
+            if edited_v1 and current_v1(self.clips)!=v1_snapshot:
+                QMessageBox.warning(dlg,'V1 changed',
+                    'Your timeline changed while Eli was analyzing. Reopen Prepare Edit to use the latest V1 cuts. Nothing was modified.')
+                return
             if replace.isChecked():
-                confirmation=QMessageBox.question(dlg,'Replace Timeline',
-                    'Replace the current timeline with the proposed Eli edit?\n'
-                    'Save your project first. You can also Undo this operation.')
+                confirmation=QMessageBox.question(dlg,'Revise V1 Timeline' if edited_v1 else 'Replace Timeline',
+                    ('Apply Eli changes to the current V1 scenes? Other tracks will remain unchanged.\n'
+                     if edited_v1 else 'Replace the current timeline with the proposed Eli edit?\n')
+                    + 'Save your project first. You can also Undo this operation.')
                 if confirmation!=QMessageBox.Yes:return
-                self.clips=[]
+                if edited_v1:
+                    self.clips=[c for c in self.clips if c.get('track')!='V1' and not (music_path.text().strip() and c.get('label')=='Eli background music — selected from requested genre')]
+                else:self.clips=[]
             elif self.clips:
                 QMessageBox.information(dlg,'Choose Montage',
                     'To build a sequential highlight reel, enable Replace current timeline.\n'
@@ -2230,31 +2276,35 @@ class Editor(QMainWindow):
             added_fx=added_sfx=0
             errors=[]
             for i,(part,a,b,rate) in enumerate(timeline):
-                clip=copy.deepcopy(source)
+                template=(state.get('v1_templates') or [])
+                clip=copy.deepcopy(template[i] if edited_v1 and i<len(template) else source)
                 clip.update(start=a,end=b,at=position,track='V1',speed=rate)
                 # Render-only 0.5s scene dissolves preserve the exact timeline length.
                 # The last clip fades smoothly to black over its final second.
-                clip['fade']=0.
+                if not edited_v1:clip['fade']=0.
                 want_transition=bool(pending and pending.get('explicit_crossfade'))
-                clip['transition']=(
-                    str(pending.get('transition_style','fade'))
-                    if want_transition else 'cut')
-                clip['crossfade_seconds']=(
-                    float(pending.get('crossfade_seconds',.5))
-                    if want_transition else 0.)
+                if want_transition:
+                    clip['transition']=str(pending.get('transition_style','fade'))
+                    clip['crossfade_seconds']=float(pending.get('crossfade_seconds',.5))
+                elif not edited_v1:
+                    clip['transition']='cut'
+                    clip['crossfade_seconds']=0.
                 clip['eli_auto_montage']=True
-                clip['eli_end_fade']=bool(
-                    pending and pending.get('explicit_end_fade')
-                    and i==len(timeline)-1)
+                clip['eli_end_fade']=(
+                    bool(pending and pending.get('explicit_end_fade'))
+                    if pending and pending.get('explicit_end_fade') else
+                    bool(v1_snapshot[-1].get('eli_end_fade',False)) if edited_v1 and i==len(timeline)-1 else
+                    False)
                 # Recorded in the project for traceability, not an extra
                 # effect. Transitions are only applied on explicit request.
                 if state.get('longform_report'):
                     clip['eli_scene_safe_longform']=True
                 # Only AI-generated V1 clips receive automatic mix balancing.
                 # Manual timeline clips retain their user-selected levels.
-                if clip.get('audio') and music_path.text().strip():
+                if clip.get('audio') and music_path.text().strip() and not edited_v1:
                     clip['volume']=.42
-                clip['label']=('Eli estimates — intro' if part=='intro' else 'Eli estimates — gameplay scene')
+                if not edited_v1:
+                    clip['label']=('Eli estimates — intro' if part=='intro' else 'Eli estimates — gameplay scene')
                 self.clips.append(clip)
                 length=(b-a)/max(.1,rate)
                 # Eli Audio Intelligence: cuts and merges are NEVER sound events.
@@ -3048,6 +3098,9 @@ class Editor(QMainWindow):
     def preview_source(self,path,source_sec,timeline_sec,autoplay=False):
         path=os.path.abspath(path)
         self.preview_start=source_sec;self.preview_at=timeline_sec
+        self._clock_last_source_ms=None
+        self._clock_last_source_change=time.monotonic()
+        self._clock_timeline_anchor=timeline_sec
         self.pending_seek_ms=max(0,round(source_sec*1000))
         self.play_when_ready=autoplay
         if self.active_path!=path or self.player.source().isEmpty():
@@ -3084,7 +3137,10 @@ class Editor(QMainWindow):
             self.stop_timeline_audio()
         else:
             self.sync_timeline_audio()
-        if state==QMediaPlayer.PlayingState:self.note.setText('Playing video')
+        if state==QMediaPlayer.PlayingState:
+            self._clock_last_source_ms=None
+            self._clock_last_source_change=time.monotonic()
+            self.note.setText('Playing video')
         elif state==QMediaPlayer.PausedState:self.note.setText('Paused')
     def insert_source(self,src,track,at):
         c=copy.deepcopy(src);c.update(track=track,at=max(0,at));self.clips.append(c);self.visual_cache.request(c['path'],c['kind']);self.selected=len(self.clips)-1
@@ -3138,6 +3194,21 @@ class Editor(QMainWindow):
         else:self.player.pause()
         self.update_all()
         self.sync_timeline_audio()
+    def update_timeline_clock(self):
+        """Keep the ruler/playhead moving when Qt misses positionChanged."""
+        if self.player.playbackState()!=QMediaPlayer.PlayingState:return
+        actual=max(0,int(self.player.position()))
+        now=time.monotonic()
+        if self._clock_last_source_ms is None or actual!=self._clock_last_source_ms:
+            self._clock_last_source_ms=actual
+            self._clock_last_source_change=now
+            self.on_position(actual)
+        elif now-self._clock_last_source_change>.30:
+            # A frame can continue playing while the Windows backend holds
+            # position notifications. Use a monotonic clock until it catches up.
+            estimated=actual+int((now-self._clock_last_source_change)*1000*max(.01,self.player.playbackRate()))
+            self.on_position(estimated)
+
     def on_position(self,ms):
         if self.player.playbackState()!=QMediaPlayer.PlayingState:return
         t=self.preview_at+(ms/1000-self.preview_start)/max(.01,self.player.playbackRate())
