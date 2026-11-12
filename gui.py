@@ -1681,7 +1681,37 @@ class Editor(QMainWindow):
             state['user_markers']=[]
             state['first_combat_output_seconds']=None
             state['planning_warning']=''
-            if mode.currentIndex()==0 and target_duration.value()<=0:
+            if edited_v1:
+                # Subsequent instructions operate on the approved V1 edits,
+                # never the imported source or footage the user deleted.
+                try:
+                    confirmed=parse_combat_markers()
+                    if pending and pending.get('focus_kills') and state.get('vision'):
+                        observations=state['vision'].get('samples',[])
+                        confirmed.extend(
+                            float(sample['time']) for sample in observations
+                            if sample.get('event')=='combat'
+                            and float(sample.get('confidence',0))>=.65
+                            and 'time' in sample)
+                    confirmed=sorted(set(confirmed))
+                    state['combat_markers']=confirmed
+                    explicit_rate=(playback_speed.value() if pending and pending.get('explicit_speed') else None)
+                    prepared,templates=revise_v1_timeline(
+                        v1_snapshot,float(target_duration.value()),
+                        cuts.get('activity_peaks',()),
+                        focus_action=bool(pending and pending.get('focus_kills')),
+                        action_markers=confirmed,
+                        explicit_speed=explicit_rate,
+                        prioritize_action=bool(pending and pending.get('combat_first')))
+                    state['segments']=prepared;state['v1_templates']=templates
+                    state['intro']=[]
+                    windows=[(a,b) for a,b,_ in prepared]
+                    state['planning_warning']='Eli prepared changes to the current V1 timeline only.'
+                except ValueError as exc:
+                    state['segments']=[];state['intro']=[];windows=[]
+                    state['v1_templates']=[]
+                    state['planning_warning']=str(exc)
+            elif mode.currentIndex()==0 and target_duration.value()<=0:
                 windows=choose_highlights(cuts,start,end,3,5.)
             elif mode.currentIndex()==2 and target_duration.value()<=0:
                 stagnant=cuts['stagnant'];quiet=cuts['quiet'] if speedup.isChecked() else []
@@ -1871,32 +1901,6 @@ class Editor(QMainWindow):
                     windows=[(a,b) for a,b,_ in segments]
                 else:
                     windows=choose_highlights(cuts,start,end,int(count.currentText()),length.value())
-            # Manual V1 is authoritative on subsequent edits. No source-based
-            # plan can restore footage the user has already discarded.
-            if edited_v1:
-                try:
-                    if len(original_v1_paths)>1:
-                        # Scanner evidence comes from one source; we can still
-                        # keep other V1 sources in their existing sequence.
-                        status.setText('Editing multiple retained V1 sources; source-specific event confidence is limited.')
-                    explicit_rate=(playback_speed.value() if pending and pending.get('explicit_speed') else None)
-                    prepared,templates=revise_v1_timeline(
-                        v1_snapshot,float(target_duration.value()),
-                        cuts.get('activity_peaks',()),
-                        focus_action=bool(pending and pending.get('focus_kills')),
-                        action_markers=confirmed,
-                        explicit_speed=explicit_rate,
-                        prioritize_action=bool(pending and pending.get('combat_first')))
-                    state['segments']=prepared
-                    state['v1_templates']=templates
-                    state['intro']=[]
-                    windows=[(a,b) for a,b,_ in prepared]
-                    state['longform_report']=None
-                    state['planning_warning']='Editing current V1 only; discarded scenes are excluded.'
-                except ValueError as exc:
-                    state['segments']=[];state['intro']=[];windows=[]
-                    state['v1_templates']=[]
-                    state['planning_warning']=str(exc)
             # Reject an inconsistent plan before enabling Apply Edit.
             requested_seconds=float(target_duration.value())
             candidate_seconds=runtime(state['segments'])+runtime(state['intro']) if state['segments'] else sum(b-a for a,b in windows)
