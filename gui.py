@@ -3219,7 +3219,7 @@ class Editor(QMainWindow):
         # Otherwise the Qt source player continues into footage Eli removed.
         expected=(c['start']+(self.playhead-c['at'])*c.get('speed',1.)) if c else None
         needs_seek=bool(c and (c['path']!=self.active_path
-                         or abs(self.player.position()/1000.-expected)>.45))
+                         or abs(ms/1000.-expected)>.45))
         if c is None:
             self.player.pause()
         elif needs_seek:
