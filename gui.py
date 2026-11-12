@@ -458,7 +458,14 @@ class VisionScanWorker(QThread):
 
 class Editor(QMainWindow):
     def __init__(self):
-        super().__init__();self.setWindowTitle(DISPLAY_NAME);self.resize(1600,940)
+        super().__init__();self.setWindowTitle(DISPLAY_NAME)
+        # Respect the usable monitor area, excluding Windows taskbar/DPI scaling.
+        screen=QApplication.primaryScreen()
+        available=screen.availableGeometry() if screen else None
+        if available:
+            self.resize(min(1450,max(720,available.width()-24)),
+                        min(850,max(560,available.height()-24)))
+        else:self.resize(1200,760)
         self.project_path=None;self._history=[];self._history_index=-1;self._history_busy=False;self._autosave_dirty=False;self.clips=[];self.media=[];self.selected=None;self.track='V1';self.playhead=0;self.active_path=None;self.preview_start=0;self.preview_at=0;self.worker=None;self.pending_seek_ms=None;self.play_when_ready=False
         self._eli_settings_store=QSettings('Eli Studio','Eli Studio')
         try:self._eli_vision_frames=int(self._eli_settings_store.value('vision_frames',64))
@@ -522,7 +529,22 @@ class Editor(QMainWindow):
             QSlider::handle:horizontal{{background:{CYAN};width:13px;margin:-5px 0;border-radius:6px;}}
             QSplitter::handle{{background:#28445a;}}''')
         root=QWidget();self.setCentralWidget(root);main=QVBoxLayout(root);main.setContentsMargins(8,8,8,8);main.setSpacing(8)
-        header=QHBoxLayout();main.addLayout(header)
+        # Keep every toolbar button reachable on smaller laptop screens.
+        # A horizontal scroll area prevents its minimum size from forcing
+        # the entire editor beyond the visible desktop.
+        header_scroll=QScrollArea(root)
+        header_scroll.setWidgetResizable(True)
+        header_scroll.setFrameShape(QFrame.NoFrame)
+        header_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        header_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        header_scroll.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        header_scroll.setFixedHeight(68)
+        header_host=QWidget(header_scroll)
+        header=QHBoxLayout(header_host)
+        header.setContentsMargins(2,1,2,1)
+        header.setSpacing(5)
+        header_scroll.setWidget(header_host)
+        main.addWidget(header_scroll)
         logo=QLabel('◈  ELI STUDIO');logo.setStyleSheet(f'font-size:21px;font-weight:800;color:{CYAN};');header.addWidget(logo)
         header.addWidget(QLabel('VIDEO EDITOR · Eli'));header.addStretch()
         for name in ['Project','Edit','Effects','Sounds','Transitions','Titles','Eli']:
@@ -551,7 +573,7 @@ class Editor(QMainWindow):
         # widget. QVideoWidget's native surface occluded transparent overlays
         # on Windows even with QStackedLayout(StackAll).
         self.monitor_host=QWidget()
-        self.monitor_host.setMinimumSize(400,240)
+        self.monitor_host.setMinimumSize(280,165)
         host_layout=QVBoxLayout(self.monitor_host)
         host_layout.setContentsMargins(0,0,0,0)
         self.live_overlay=LiveOverlay(self,self.monitor_host)
@@ -581,7 +603,7 @@ class Editor(QMainWindow):
             tools.addWidget(self.button(name,fn,name in ('✂ Snip','＋ Insert Clip')))
         top.addWidget(middle)
         right=QFrame();right.setObjectName('propertiesPanel')
-        right.setMinimumWidth(300)
+        right.setMinimumWidth(245)
         right.setStyleSheet(f"""
             QFrame#propertiesPanel QLabel {{font-family:'Segoe UI';font-size:14px;}}
             QFrame#propertiesPanel QComboBox,QFrame#propertiesPanel QDoubleSpinBox {{
@@ -702,7 +724,12 @@ class Editor(QMainWindow):
                 control.setProperty('fragforge_wheel_armed',False)
                 control.installEventFilter(self)
         panel_content.adjustSize()
-        top.addWidget(right);top.setSizes([250,950,330])
+        top.addWidget(right)
+        # Avoid overflow on 1366px or scaled Windows displays.
+        for pane in (left,middle,right):pane.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
+        top.setChildrenCollapsible(False)
+        top.setStretchFactor(0,1);top.setStretchFactor(1,4);top.setStretchFactor(2,2)
+        top.setSizes([210,790,275])
         timeline_top=QHBoxLayout();main.addLayout(timeline_top)
         timeline_top.addWidget(self.button('＋ Add Sound Track',self.add_track));timeline_top.addWidget(QLabel('Drag clips to move • drop media to insert'))
         self.snap_checkbox=QCheckBox('Snap');self.snap_checkbox.setChecked(True);timeline_top.addWidget(self.snap_checkbox)
@@ -712,6 +739,7 @@ class Editor(QMainWindow):
         timeline_top.addWidget(self.button('Fit',self.fit_timeline))
         self.visual_cache=VisualCache()
         self.timeline=Timeline();self.timeline.visual_cache=self.visual_cache
+        self.timeline.setMinimumHeight(180)
         self.visual_cache.ready.connect(self.on_visual_ready)
         self.timeline.picked.connect(self.timeline_clicked);self.timeline.dropped.connect(self.timeline_dropped);self.timeline.moved.connect(self.timeline_moved);self.snap_checkbox.toggled.connect(self.set_snap);main.addWidget(self.timeline,5)
         self.note=QLabel('Ready  •  Drag media from the library to the timeline; drag clips to reposition');main.addWidget(self.note)
