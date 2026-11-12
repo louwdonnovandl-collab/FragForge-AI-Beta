@@ -10,7 +10,8 @@ from media import probe, export_layers, nvenc_available, binary
 from eli_transition_palette import TRANSITION_STYLES, scene_cut_indices, plan_montage_transitions
 from eli_live_preview import LiveFadeController, ending_fade_gain
 from eli_timeline_ripple import ripple_delete_v1
-from eli_v1_context import current_v1, source_paths, revise_v1_timeline
+from eli_v1_context import current_v1, source_paths, revise_v1_timeline, align_plan_to_v1
+from eli_edit_contract import plan_visible_montage, validate_edit_contract
 from effects import EFFECTS, effect_path
 from sounds import SOUNDS, resolve_sound, user_sounds, import_user_sound
 from director_executor import runtime, select_runtime, intro_candidates, intro_from_activity, ranked_activity_cues, precision_montage, prioritize_action_opening
@@ -1913,6 +1914,44 @@ class Editor(QMainWindow):
                     windows=[(a,b) for a,b,_ in segments]
                 else:
                     windows=choose_highlights(cuts,start,end,int(count.currentText()),length.value())
+            # A requested transition montage must contain actual, separated
+            # shots. One long source trim is not an edited montage.
+            if (pending and pending.get('explicit_crossfade') and
+                    float(target_duration.value())>=12. and
+                    len(windows)<2 and not state.get('planning_warning','').startswith('Eli could not')):
+                try:
+                    requested_rate=(playback_speed.value()
+                                    if pending.get('explicit_speed') else 1.)
+                    if edited_v1:
+                        if len(original_v1_paths)!=1:
+                            raise ValueError(
+                                'Automatic source-scene montage requires one video '
+                                'source on V1; preserve and transition the existing '
+                                'multiple-source clips manually.')
+                        kept=[(float(c['start']),float(c['end']),float(c.get('speed',1.)))
+                              for c in v1_snapshot]
+                        proposed,info=plan_visible_montage(
+                            kept,cuts.get('activity_peaks',()),
+                            target_duration.value(),requested_rate)
+                        proposed,templates=align_plan_to_v1(
+                            proposed,v1_snapshot,explicit_speed=True,
+                            preserve_order=True)
+                        state['v1_templates']=templates
+                    else:
+                        clean=smart_pacing_segments(
+                            0.,full_end,cuts.get('stagnant',[]),[])
+                        proposed,info=plan_visible_montage(
+                            clean,cuts.get('activity_peaks',()),
+                            target_duration.value(),requested_rate)
+                    state['intro']=[]
+                    state['segments']=proposed
+                    windows=[(a,b) for a,b,_ in proposed]
+                    state['montage_report']=info
+                    state['planning_warning']='Eli selected separate gameplay scenes for requested transitions.'
+                except ValueError as exc:
+                    state['segments']=[];state['intro']=[];windows=[]
+                    state['v1_templates']=[]
+                    state['planning_warning']=str(exc)
             # Reject an inconsistent plan before enabling Apply Edit.
             requested_seconds=float(target_duration.value())
             candidate_seconds=runtime(state['segments'])+runtime(state['intro']) if state['segments'] else sum(b-a for a,b in windows)
@@ -2306,6 +2345,12 @@ class Editor(QMainWindow):
                     clip['transition']='cut'
                     clip['crossfade_seconds']=0.
                 clip['eli_auto_montage']=True
+                # Export joins truly contiguous source clips without a fade
+                # unless the explicitly requested transition forces one.
+                if want_transition and i>0:
+                    clip['eli_force_transition']=True
+                elif not edited_v1:
+                    clip['eli_force_transition']=False
                 clip['eli_end_fade']=(
                     bool(pending and pending.get('explicit_end_fade'))
                     if pending and pending.get('explicit_end_fade') else
@@ -2369,6 +2414,15 @@ class Editor(QMainWindow):
             # Never silently accept a shorter export than explicitly requested.
             if requested and abs(actual_v1-requested)>tolerance:
                 failures.append(f'Final video is {actual_v1:.2f}s; requested {requested:.2f}s. Re-analyze with more source footage.')
+            failures.extend(validate_edit_contract(
+                self.clips,
+                target_seconds=requested,
+                requested_speed=(playback_speed.value()
+                                 if pending and pending.get('explicit_speed') else None),
+                transition_style=(str(pending.get('transition_style','fade'))
+                                  if pending and pending.get('explicit_crossfade') else None),
+                transition_seconds=(float(pending.get('crossfade_seconds',.5))
+                                    if pending else .5)))
             if failures:
                 self.clips=previous_clips
                 self.selected=None
